@@ -1,4 +1,3 @@
-```javascript
 /**
  * 本地化 Tesseract 配置最终版 app.js（OCR 优先 + 兜底评分 + 强制纵向 + A4 等比输出）
  * 目录要求：
@@ -40,6 +39,10 @@ const TESSERACT_CONFIG = {
   langPath:   './tesseract/lang-data'
 };
 
+// 显示脚本加载日志
+console.log('[scanner] app.js loaded');
+if (statusEl) statusEl.textContent = '脚本已加载，等待 OpenCV 初始化…';
+
 function waitCvReady() {
   return new Promise((resolve, reject) => {
     if (typeof cv !== 'undefined' && cv['onRuntimeInitialized']) {
@@ -61,11 +64,18 @@ function waitCvReady() {
 }
 
 waitCvReady().then(() => {
+  console.log('[scanner] OpenCV ready');
   statusEl.textContent = 'OpenCV 就绪。点击“启动相机”或上传图片。';
   snapBtn.disabled = false;
 }).catch(err => {
   console.error(err);
   statusEl.textContent = 'OpenCV 加载失败，请检查路径。';
+});
+
+// 捕获全局错误到状态栏，便于快速定位
+window.addEventListener('error', (e) => {
+  console.error('[scanner] window error', e.error || e.message);
+  statusEl.textContent = `脚本错误：${e.error?.message || e.message}`;
 });
 
 startBtn.addEventListener('click', async () => {
@@ -258,9 +268,7 @@ async function autoUprightOCRFirst(enhancedMat) {
 
   const osd = await getOrientationByOSD(canvas);
   if (osd && typeof osd.deg === 'number') {
-    // 临时日志：采用 OSD 旋转
     statusEl.textContent += ` → 采用OSD旋转 ${osd.deg}°`;
-    // 关键：OSD 返回的是“需要旋转到正向的角度”，应直接旋转 degNormalized
     canvas = rotateCanvas(canvas, osd.deg);
   } else {
     statusEl.textContent += ` → OSD不可用，采用兜底评分`;
@@ -291,15 +299,11 @@ async function getOrientationByOSD(canvas) {
 
     const deg = normalizeDeg(rawDeg);
 
-    // 临时日志：显示原始角度、归一化角度、置信度
     statusEl.textContent = `OSD: raw=${rawDeg}°, norm=${deg}°, conf=${conf.toFixed(2)}`;
-
-    // 低置信度直接放弃，走兜底评分（阈值可按需要微调）
     if (conf < 1.0) {
       statusEl.textContent += '（置信度低，启用兜底评分）';
       return null;
     }
-
     return { deg, conf };
   } catch (e) {
     console.warn('OSD 检测失败（将回退评分法）：', e);
@@ -452,4 +456,3 @@ function orderQuad(points){
   return [tl,tr,br,bl];
 }
 function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx + dy*dy); }
-```
