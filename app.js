@@ -57,7 +57,7 @@ waitCvReady().then(() => {
   snapBtn.disabled = false;
 }).catch(err => {
   console.error(err);
-  statusEl.textContent = 'OpenCV 加载失败，请使用 HTTP/HTTPS 访问并检查路径。';
+  statusEl.textContent = 'OpenCV 加载失败，请使用 HTTP/HTTPS 访问并检查路径（或放宽 CSP）。';
 });
 
 startBtn.addEventListener('click', async () => {
@@ -371,4 +371,54 @@ function enhanceImage(mat, mode='auto') {
   cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
 
   let gray = new cv.Mat();
-  cv
+  cv.cvtColor(rgb, gray, cv.COLOR_RGB2GRAY);
+
+  let bg = new cv.Mat();
+  cv.GaussianBlur(gray, bg, new cv.Size(0, 0), 35);
+  let norm = new cv.Mat();
+  cv.subtract(gray, bg, norm);
+  cv.normalize(norm, norm, 0, 255, cv.NORM_MINMAX);
+
+  let bw = new cv.Mat();
+  cv.adaptiveThreshold(norm, bw, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 31, 10);
+
+  let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2,2));
+  cv.morphologyEx(bw, bw, cv.MORPH_OPEN, kernel);
+
+  let out = new cv.Mat();
+  if (mode === 'binarize') {
+    out = bw.clone();
+  } else if (mode === 'color') {
+    let lab = new cv.Mat();
+    cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+    let channels = new cv.MatVector();
+    cv.split(lab, channels);
+    cv.equalizeHist(channels.get(0), channels.get(0)); // L 通道直方图均衡
+    cv.merge(channels, lab);
+    cv.cvtColor(lab, out, cv.COLOR_Lab2RGB);
+    channels.delete(); lab.delete();
+  } else {
+    const mean = new cv.Mat();
+    const stddev = new cv.Mat();
+    cv.meanStdDev(norm, mean, stddev);
+    const contrast = stddev.doubleAt(0,0);
+    if (contrast > 30) {
+      out = bw.clone();
+    } else {
+      out = new cv.Mat();
+      cv.cvtColor(rgb, out, cv.COLOR_RGB2RGBA);
+    }
+    mean.delete(); stddev.delete();
+  }
+
+  rgb.delete(); gray.delete(); bg.delete(); norm.delete(); kernel.delete();
+
+  return out;
+}
+
+function renderResult(mat) {
+  cv.imshow(resultCanvas, mat);
+  mat.delete();
+  downloadPngBtn.disabled = false;
+  downloadJpgBtn.disabled = false;
+}
