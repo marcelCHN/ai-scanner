@@ -33,6 +33,18 @@ let latestResultCanvas = null;
 
 const A4_RATIO_W2H = 1 / Math.sqrt(2); // ≈0.707
 
+// 安全兜底：若 enhanceAndWarp 未定义，提供一个最小实现避免流程失败
+if (typeof enhanceAndWarp !== 'function') {
+  function enhanceAndWarp(canvas, quad) {
+    // 简化版本：不做透视，直接增强输入画面
+    const src = cv.imread(canvas);
+    let out = enhanceImage(src, (typeof enhanceModeEl !== 'undefined' ? enhanceModeEl.value : 'auto'));
+    src.delete();
+    return out; // Mat
+  }
+}
+
+
 // 计算站点基路径，例如 https://marcelchn.github.io/ai-scanner
 const BASE = (() => {
   const u = new URL(location.href);
