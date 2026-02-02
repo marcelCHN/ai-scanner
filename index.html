@@ -5,11 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Pad 文档扫描器（本地算法自动正向）</title>
   <link rel="stylesheet" href="./style.css" />
+
+  <!-- OpenCV 的 wasm 定位（若你的 opencv.js 需要），无副作用 -->
   <script>
     window.Module = { locateFile: (path) => './' + path };
   </script>
+
+  <!-- 加载顺序：opencv.js →（可选）tesseract.min.js → app.js（defer）
+       注：本版本不再依赖 Tesseract/OSD，若无需可删除 tesseract.min.js 引用 -->
   <script src="./opencv.js"></script>
-  <!-- 不再依赖 Tesseract，可删除该行；如保留也不影响 -->
   <!-- <script src="./tesseract/tesseract.min.js"></script> -->
   <script src="./app.js" defer></script>
 </head>
@@ -28,20 +32,22 @@
       </div>
 
       <div class="controls">
-        <button id="startBtn">启动相机</button>
-        <button id="snapBtn" disabled>手动拍摄</button>
+        <button id="startBtn" class="btn btn-primary">启动相机</button>
+        <button id="snapBtn" class="btn btn-primary" disabled>手动拍摄</button>
 
+        <!-- 统一样式的“选择文件（可多选）” -->
         <label class="upload">
-          <input type="file" id="fileInput" accept="image/*" />
-          <span class="upload-btn">上传图片生成扫描件</span>
+          <input type="file" id="fileInput" accept="image/*" multiple />
+          <span class="btn btn-primary">选择文件（可多选）</span>
         </label>
+        <span id="uploadHint" style="margin-left:8px;color:#9ca3af;font-size:12px;">支持一次选择多张图片</span>
 
-        <label class="toggle">
+        <label class="toggle" style="margin-left:12px;">
           <input type="checkbox" id="autoCapture" checked />
           <span>自动抓拍（检测到稳定 A4）</span>
         </label>
 
-        <div class="options">
+        <div class="options" style="margin-left:12px;">
           <label>
             增强模式：
             <select id="enhanceMode">
@@ -50,7 +56,7 @@
               <option value="color">保留彩色</option>
             </select>
           </label>
-          <label>
+          <label style="margin-left:12px;">
             输出分辨率：
             <select id="outputSize">
               <option value="m">中（约 1600×2300）</option>
@@ -60,22 +66,34 @@
           </label>
         </div>
 
-        <div class="options">
-          <button id="rotateLeftBtn">左转90°</button>
-          <button id="rotateRightBtn">右转90°</button>
-          <button id="rotate180Btn">旋转180°</button>
+        <div class="options" style="margin-left:12px;">
+          <button id="rotateLeftBtn"  class="btn btn-primary btn-sm">左转90°</button>
+          <button id="rotateRightBtn" class="btn btn-primary btn-sm">右转90°</button>
+          <button id="rotate180Btn"  class="btn btn-primary btn-sm">旋转180°</button>
         </div>
       </div>
     </section>
 
     <section class="result-section">
       <h2>扫描结果</h2>
+
+      <!-- 浏览控件（上一张/下一张 + 指示器） -->
+      <div class="gallery-toolbar">
+        <button id="prevScan" class="btn btn-primary btn-sm">上一张</button>
+        <span id="scanIndicator" class="indicator">0 / 0</span>
+        <button id="nextScan" class="btn btn-primary btn-sm">下一张</button>
+      </div>
+
       <div class="result-wrapper">
         <canvas id="resultCanvas"></canvas>
       </div>
-      <div class="result-actions">
-        <button id="downloadPng" disabled>下载 PNG</button>
-        <button id="downloadJpg" disabled>下载 JPG</button>
+
+      <!-- 缩略图列表 -->
+      <div id="thumbList" class="thumb-list"></div>
+
+      <div class="result-actions" style="margin-top:12px;">
+        <button id="downloadPng" class="btn btn-primary" disabled>下载 PNG</button>
+        <button id="downloadJpg" class="btn btn-primary" disabled>下载 JPG</button>
       </div>
     </section>
 
