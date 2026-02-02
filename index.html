@@ -3,23 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 扫描 - 几何对齐修正版</title>
+    <title>AI 高清扫描 - 最终修正版</title>
     <style>
         body { margin: 0; background: #000; font-family: system-ui; color: white; overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
-        #stage { flex: 1; position: relative; display: flex; justify-content: center; align-items: center; background: #111; }
+        #stage { flex: 1; position: relative; display: flex; justify-content: center; align-items: center; background: #111; overflow: hidden; }
         video, canvas { max-width: 100%; max-height: 100%; position: absolute; }
-        #canvasOutput { display: none; z-index: 10; }
-        .status-bar { position: fixed; top: 20px; width: 100%; text-align: center; z-index: 100; }
-        .badge { background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; border: 1px solid #444; color: #ff9500; font-size: 14px; }
-        .controls { height: 120px; background: #000; display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #333; }
-        .btn { background: none; border: none; color: white; display: flex; flex-direction: column; align-items: center; gap: 8px; opacity: 0.3; pointer-events: none; }
+        #canvasOutput { display: none; z-index: 10; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        .status-bar { position: fixed; top: 20px; width: 100%; text-align: center; z-index: 100; pointer-events: none; }
+        .badge { background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; border: 1px solid #444; color: #00ff00; font-size: 14px; }
+        .controls { height: 100px; background: #000; display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #333; }
+        .btn { background: none; border: none; color: white; display: flex; flex-direction: column; align-items: center; gap: 5px; opacity: 0.3; pointer-events: none; }
         .btn.ready { opacity: 1; pointer-events: auto; }
-        .shutter { width: 60px; height: 60px; background: white; border-radius: 50%; border: 4px solid #333; }
+        .shutter { width: 50px; height: 50px; background: white; border-radius: 50%; border: 4px solid #333; }
     </style>
 </head>
 <body>
 
-<div class="status-bar"><span class="badge" id="msg">正在载入 AI 引擎...</span></div>
+<div class="status-bar"><span class="badge" id="msg">载入中...</span></div>
 
 <div id="stage">
     <video id="video" autoplay playsinline></video>
@@ -28,18 +28,18 @@
 
 <div class="controls">
     <button id="btn-file" class="btn" onclick="document.getElementById('fileInput').click()">
-        <div style="width:24px; height:24px; border:2px solid white;"></div>
-        <span>导入图片</span>
+        <div style="width:20px; height:20px; border:2px solid white;"></div>
+        <span>导入</span>
     </button>
     <input type="file" id="fileInput" hidden accept="image/*">
 
     <button id="btn-snap" class="btn" onclick="capture()">
         <div class="shutter"></div>
-        <span>拍照扫描</span>
+        <span>拍照</span>
     </button>
 
     <button class="btn ready" onclick="location.reload()">
-        <div style="width:24px; height:24px; border:2px solid white; border-radius:50%;"></div>
+        <div style="width:20px; height:20px; border:2px solid white; border-radius:50%;"></div>
         <span>重置</span>
     </button>
 </div>
@@ -49,7 +49,6 @@
         onRuntimeInitialized() {
             document.querySelectorAll('.btn').forEach(b => b.classList.add('ready'));
             document.getElementById('msg').innerText = "AI 引擎就绪";
-            document.getElementById('msg').style.color = "#00ff00";
             startCam();
         }
     };
@@ -57,33 +56,42 @@
     function startCam() {
         navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
             .then(s => { document.getElementById('video').srcObject = s; })
-            .catch(e => { document.getElementById('msg').innerText = "相机不可用"; });
+            .catch(e => { document.getElementById('msg').innerText = "请使用导入功能"; });
     }
 
-    // 新增：关键的几何点位排序算法
-    function sortPoints(pts) {
-        let sorted = new Array(4);
-        // pts 是 [{x,y}, ...]
+    // 强化版四点排序逻辑
+    function getSortedPoints(pts) {
+        let center = pts.reduce((acc, p) => ({x: acc.x + p.x/4, y: acc.y + p.y/4}), {x:0, y:0});
+        
+        // 按照相对于中心点的角度排序：左上, 右上, 右下, 左下
+        let sorted = pts.sort((a, b) => {
+            return Math.atan2(a.y - center.y, a.x - center.x) - Math.atan2(b.y - center.y, b.x - center.x);
+        });
+
+        // 调整起始点（atan2 从右侧开始，我们需要从左上开始）
+        // 标准顺序：TL(Index 2), TR(Index 3), BR(Index 0), BL(Index 1) 取决于坐标系
+        // 这里直接用简单的极值法二次校验
         let sums = pts.map(p => p.x + p.y);
         let diffs = pts.map(p => p.y - p.x);
-
-        sorted[0] = pts[sums.indexOf(Math.min(...sums))]; // TL
-        sorted[2] = pts[sums.indexOf(Math.max(...sums))]; // BR
-        sorted[1] = pts[diffs.indexOf(Math.min(...diffs))]; // TR
-        sorted[3] = pts[diffs.indexOf(Math.max(...diffs))]; // BL
         
-        return sorted;
+        return [
+            pts[sums.indexOf(Math.min(...sums))], // TL
+            pts[diffs.indexOf(Math.min(...diffs))], // TR
+            pts[sums.indexOf(Math.max(...sums))], // BR
+            pts[diffs.indexOf(Math.max(...diffs))]  // BL
+        ];
     }
 
     function process(source) {
         let src = cv.imread(source);
         let dst = new cv.Mat();
         
-        // 预处理
+        // 1. 预处理：降噪 + 边缘检测
         cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
         cv.GaussianBlur(dst, dst, new cv.Size(5, 5), 0);
-        cv.Canny(dst, dst, 75, 200);
+        cv.Canny(dst, dst, 50, 150);
 
+        // 2. 轮廓提取
         let contours = new cv.MatVector();
         let hierarchy = new cv.Mat();
         cv.findContours(dst, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
@@ -94,44 +102,47 @@
             let peri = cv.arcLength(cnt, true);
             let approx = new cv.Mat();
             cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-            if (approx.rows == 4 && cv.contourArea(approx) > maxArea) {
-                maxArea = cv.contourArea(approx);
-                approx.copyTo(poly);
+            
+            if (approx.rows == 4) {
+                let area = cv.contourArea(approx);
+                if (area > maxArea) {
+                    maxArea = area;
+                    approx.copyTo(poly);
+                }
             }
             approx.delete();
         }
 
-        if (maxArea > 1000) {
-            // 1. 提取原始点
+        if (maxArea > 5000) {
             let rawPts = [];
             for (let i = 0; i < 4; i++) {
                 rawPts.push({ x: poly.data32S[i * 2], y: poly.data32S[i * 2 + 1] });
             }
 
-            // 2. 几何排序 (解决翻转问题)
-            let sorted = sortPoints(rawPts);
+            let sorted = getSortedPoints(rawPts);
 
-            // 3. 执行透视变换
+            // 3. 透视变换
             let warped = new cv.Mat();
-            let dsize = new cv.Size(800, 1131); // A4 比例
+            const width = 800, height = 1131;
             let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
                 sorted[0].x, sorted[0].y, sorted[1].x, sorted[1].y,
                 sorted[2].x, sorted[2].y, sorted[3].x, sorted[3].y
             ]);
-            let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0,0, 800,0, 800,1131, 0,1131]);
+            let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, width, 0, width, height, 0, height]);
             let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
-            cv.warpPerspective(src, warped, M, dsize);
+            cv.warpPerspective(src, warped, M, new cv.Size(width, height));
             
-            // 4. 高清二值化
+            // 4. 优化二值化参数：针对文字稿件优化
             cv.cvtColor(warped, warped, cv.COLOR_RGBA2GRAY);
-            cv.adaptiveThreshold(warped, warped, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 15, 10);
+            // 增大 block size (21) 和 constant (15) 以减少背景燥点
+            cv.adaptiveThreshold(warped, warped, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 15);
             
             document.getElementById('canvasOutput').style.display = 'block';
             cv.imshow('canvasOutput', warped);
             
             warped.delete(); srcCoords.delete(); dstCoords.delete(); M.delete();
         } else {
-            alert("未能识别边界，请确保纸张完整且背景色深");
+            alert("未能精确识别表格边界，请确保纸张完全进入镜头且背景为深色");
         }
         src.delete(); dst.delete(); contours.delete(); hierarchy.delete(); poly.delete();
     }
