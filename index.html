@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI 高清文档扫描系统</title>
+    <style>
+        :root { --accent: #007AFF; }
+        body { margin: 0; background: #000; font-family: system-ui; color: white; overflow: hidden; }
+        
+        /* 布局 */
+        .viewport { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+        #stage { flex: 1; position: relative; background: #111; display: flex; justify-content: center; align-items: center; }
+        video, #canvasOutput { max-width: 100%; max-height: 100%; position: absolute; }
+        #canvasOutput { z-index: 10; display: none; background: #000; }
+
+        /* 状态提示 */
+        #status { position: fixed; top: 20px; width: 100%; text-align: center; z-index: 100; pointer-events: none; }
+        .badge { background: rgba(0,0,0,0.6); padding: 5px 15px; border-radius: 20px; font-size: 13px; border: 1px solid #444; }
+
+        /* 控制栏 */
+        .controls { height: 140px; background: linear-gradient(transparent, rgba(0,0,0,0.9)); display: flex; justify-content: space-around; align-items: center; z-index: 100; }
+        .btn { display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: pointer; background: none; border: none; color: white; transition: 0.3s; }
+        .btn:active { opacity: 0.6; }
+        .btn-main { width: 70px; height: 70px; background: white; border-radius: 50%; border: 5px solid #333; }
+        .btn-main:disabled { background: #444; border-color: #222; }
+        .icon { width: 24px; height: 24px; border: 2px solid white; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+<div id="status">
+    <span class="badge" id="msg">正在初始化引擎...</span>
+</div>
+
+<div class="viewport">
+    <div id="stage">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvasOutput"></canvas>
+    </div>
+
+    <div class="controls">
+        <button class="btn" onclick="document.getElementById('fileInput').click()">
+            <div class="icon" style="background: #444;"></div>
+            <span>导入照片</span>
+        </button>
+        <input type="file" id="fileInput" hidden accept="image/*">
+
+        <button id="shutter" class="btn" onclick="captureAndProcess()" disabled>
+            <div class="btn-main"></div>
+            <span>开始扫描</span>
+        </button>
+
+        <button class="btn" onclick="reset()">
+            <div class="icon" style="border-radius: 50%;"></div>
+            <span>重置</span>
+        </button>
+    </div>
+</div>
+
+<script async src="https://mirrors.sustech.edu.cn/cdnjs/ajax/libs/opencv.js/4.5.1/opencv.js" onload="onOpenCvReady()"></script>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvasOutput');
+const msg = document.getElementById('msg');
+const shutter = document.getElementById('shutter');
+let isReady = false;
+
+// 1. 引擎加载
+function onOpenCvReady() {
+    cv['onRuntimeInitialized'] = () => {
+        isReady = true;
+        msg.innerText = "引擎就绪，等待相机...";
+        msg.style.borderColor = "#00ff00";
+        shutter.disabled = false;
+        initCamera();
+    };
+}
+
+// 2. 相机启动
+async function initCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
+        });
+        video.srcObject = stream;
+        msg.innerText = "请对准 A4 纸张";
+    } catch (err) {
+        msg.innerText = "无法启动相机，请尝试导入图片";
+        msg.style.color = "#ff4444";
+    }
+}
+
+// 3. 点位排序算法 (TL, TR, BR, BL)
+function orderPoints(ptsArr) {
+    let rect = new Array(4);
+    let sums = ptsArr.map(p => p.x + p.y);
+    let diffs = ptsArr.map(p => p.y - p.x);
+
+    rect[0] = ptsArr[sums.indexOf(Math.min(...sums))]; // TL
+    rect[2] = ptsArr[sums.indexOf(Math.max(...sums))]; // BR
+    rect[1] = ptsArr[diffs.indexOf(Math.min(...diffs))]; // TR
+    rect[3] = ptsArr[diffs.indexOf(Math.max(...diffs))]; // BL
+    
+    return [rect[0].x, rect[0].y, rect[1].x, rect[1].y, rect[2].x, rect[2].y, rect[3].x, rect[3].y];
+}
+
+// 4. 核心图像处理
+function process(source) {
+    if (!isReady) return;
+    
+    let src = cv.imread(source);
+    let dst = new cv.Mat();
+    
+    // 预处理：灰度 -> 模糊 -> 边缘检测
+    cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(dst, dst, new cv.Size(5, 5), 0);
+    cv.Canny(dst, dst, 75, 200);
+
+    // 寻找最大四边形轮廓
+    let contours = new cv.MatVector();
+    let hierarchy = new cv.Mat();
+    cv.findContours(dst, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    let maxArea = 0;
+    let poly = new cv.Mat();
+
+    for (let i = 0; i < contours.size(); ++i) {
+        let cnt = contours.get(i);
+        let peri = cv.arcLength(cnt, true);
+        let approx = new cv.Mat();
+        cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+        
+        if (approx.rows == 4) {
+            let area = cv.contourArea(approx);
+            if (area > maxArea) {
+                maxArea = area;
+                approx.copyTo(poly);
+            }
+        }
+        approx.delete();
+    }
+
+    if (maxArea > 1000) {
+        // 提取坐标点
+        let pts = [];
+        for (let i = 0; i < 4; i++) {
+            pts.push({ x: poly.data32S[i * 2], y: poly.data32S[i * 2 + 1] });
+        }
+        let sortedPts = orderPoints(pts);
+
+        // 透视变换到 A4 高清比例
+        const w = 1000, h = 1414;
+        let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, sortedPts);
+        let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, w, 0, w, h, 0, h]);
+        let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
+        let warped = new cv.Mat();
+        cv.warpPerspective(src, warped, M, new cv.Size(w, h));
+
+        // 效果增强：二值化处理
+        cv.cvtColor(warped, warped, cv.COLOR_RGBA2GRAY);
+        cv.adaptiveThreshold(warped, warped, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 15, 10);
+
+        canvas.style.display = 'block';
+        cv.imshow('canvasOutput', warped);
+        msg.innerText = "扫描成功！";
+
+        warped.delete(); srcCoords.delete(); dstCoords.delete(); M.delete();
+    } else {
+        alert("未检测到 A4 纸边缘，请确保背景与纸张颜色有区分。");
+    }
+
+    src.delete(); dst.delete(); contours.delete(); hierarchy.delete(); poly.delete();
+}
+
+// 5. 交互
+function captureAndProcess() {
+    process(video);
+}
+
+document.getElementById('fileInput').onchange = (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => process(img);
+        img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+};
+
+function reset() {
+    canvas.style.display = 'none';
+    msg.innerText = "请对准 A4 纸张";
+}
+</script>
+</body>
+</html>
