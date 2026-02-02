@@ -1,7 +1,7 @@
 /**
  * Pad 文档扫描器（A4 自动识别 + 透视与角度校正 + 去杂物 + 高清增强）
- * 默认：扫描结果纵向、正向输出
- * 可选：文字方向校正（Tesseract.js OSD），以及手动旋转
+ * 改进：不依赖 Tesseract，基于投影统计对 0/90/180/270 进行评分，自动选择“文字正向”；
+ * 同时强制输出纵向（portrait）。
  */
 
 const videoEl = document.getElementById('video');
@@ -16,7 +16,8 @@ const downloadJpgBtn = document.getElementById('downloadJpg');
 const enhanceModeEl = document.getElementById('enhanceMode');
 const outputSizeEl = document.getElementById('outputSize');
 const fileInput = document.getElementById('fileInput');
-const textOrientationFixEl = document.getElementById('textOrientationFix');
+
+// 手动兜底按钮（若 index.html 已有）
 const rotateLeftBtn = document.getElementById('rotateLeftBtn');
 const rotateRightBtn = document.getElementById('rotateRightBtn');
 const rotate180Btn = document.getElementById('rotate180Btn');
@@ -133,7 +134,7 @@ fileInput.addEventListener('change', async (e) => {
   img.src = URL.createObjectURL(file);
 });
 
-autoCaptureEl.addEventListener('change', () => {
+autoCaptureEl?.addEventListener('change', () => {
   a4StableCounter = 0;
 });
 
@@ -146,22 +147,22 @@ downloadJpgBtn.addEventListener('click', () => {
   downloadDataUrl(url, 'scan.jpg');
 });
 
-// 手动旋转
-rotateLeftBtn.addEventListener('click', () => {
+// 手动旋转（如有）
+rotateLeftBtn?.addEventListener('click', () => {
   if (!latestResultCanvas) return;
   latestResultCanvas = rotateCanvas(latestResultCanvas, 270); // 左转90
   const mat = cv.imread(latestResultCanvas);
   cv.imshow(resultCanvas, mat);
   mat.delete();
 });
-rotateRightBtn.addEventListener('click', () => {
+rotateRightBtn?.addEventListener('click', () => {
   if (!latestResultCanvas) return;
   latestResultCanvas = rotateCanvas(latestResultCanvas, 90);
   const mat = cv.imread(latestResultCanvas);
   cv.imshow(resultCanvas, mat);
   mat.delete();
 });
-rotate180Btn.addEventListener('click', () => {
+rotate180Btn?.addEventListener('click', () => {
   if (!latestResultCanvas) return;
   latestResultCanvas = rotateCanvas(latestResultCanvas, 180);
   const mat = cv.imread(latestResultCanvas);
@@ -204,7 +205,7 @@ function processFrame() {
     lastQuad = quad;
     statusEl.textContent = '已检测到疑似 A4（稳定度 ' + a4StableCounter + '/10）';
     a4StableCounter = Math.min(a4StableCounter + 1, 10);
-    if (autoCaptureEl.checked && a4StableCounter >= 8) {
+    if (autoCaptureEl?.checked && a4StableCounter >= 8) {
       processAndRender(frameCanvas, quad, '自动抓拍');
       a4StableCounter = 0;
     }
@@ -238,13 +239,15 @@ function drawOverlay(quad) {
   ctx.stroke();
 }
 
-/** 主流程：透视 + 增强 + 自动正向（默认纵向） + 渲染 */
+/** 主流程：透视 + 增强 + 自动选择 0/90/180/270 的“文字正向”，并强制纵向 + 渲染 */
 async function processAndRender(canvas, quad, sourceLabel='') {
   if (!quad) statusEl.textContent = `未检测到 A4 四边形（${sourceLabel}），已增强原图。`;
   else statusEl.textContent = `已生成扫描件（${sourceLabel}）。`;
 
   const enhancedMat = enhanceAndWarp(canvas, quad); // 透视 + 增强的 Mat
-  latestResultCanvas = await autoUpright(enhancedMat); // Canvas（强制纵向、尽量正向）
+
+  // 自动选择最佳方向
+  latestResultCanvas = autoChooseUpright(enhancedMat); // Canvas（自动正向 + 纵向）
 
   const mat = cv.imread(latestResultCanvas);
   cv.imshow(resultCanvas, mat);
@@ -352,40 +355,105 @@ function enhanceImage(mat, mode='auto') {
 }
 
 /**
- * 自动正向（核心）：
- * - 先强制纵向：宽>高则逆时针旋转90°
- * - 如开启文字方向校正且 Tesseract 可用，使用 OSD：0/90/180/270
- * - 最终再次强制纵向：如果旋转后仍横向，继续逆时针旋转90°
+ * 自动选择正向（不依赖 OCR）：
+ * - 针对 0/90/180/270 四个旋转，计算可读性评分：
+ *   * 先做 OTSU 二值化
+ *   * 计算行投影方差 rowVar 与列投影方差 colVar
+ *   * 可读性分数 score = max(rowVar, colVar)
+ * - 选择 score 最大的角度
+ * - 最后强制纵向（portrait）
  */
-async function autoUpright(enhancedMat) {
-  let canvas = matToCanvas(enhancedMat);
+function autoChooseUpright(enhancedMat) {
+  // 候选角度
+  const candidates = [0, 90, 180, 270];
+  let bestDeg = 0;
+  let bestScore = -Infinity;
 
-  // A. 默认：强制纵向
+  for (const deg of candidates) {
+    const rotated = rotateMat(enhancedMat, deg);
+    const scoreObj = readabilityScore(rotated);
+    const score = Math.max(scoreObj.rowVar, scoreObj.colVar);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestDeg = deg;
+    }
+    rotated.delete();
+  }
+
+  // 选中角度后，生成 Canvas
+  let canvas = matToCanvas(rotateMat(enhancedMat, bestDeg));
+
+  // 强制纵向（portrait）
   if (canvas.width > canvas.height) {
     canvas = rotateCanvas(canvas, 270); // CCW 90°
   }
 
-  // B. 文字方向校正（可选）
-  if (textOrientationFixEl.checked && typeof Tesseract !== 'undefined') {
-    try {
-      const detection = await Tesseract.detect(canvas);
-      const data = detection.data || detection;
-      const deg = (data.orientation && data.orientation.degrees) || data.degrees || 0;
-      const allowed = new Set([0, 90, 180, 270]);
-      if (allowed.has(deg)) {
-        canvas = rotateCanvas(canvas, deg);
-      }
-    } catch (e) {
-      console.warn('Tesseract OSD 失败：', e);
-    }
-  }
-
-  // C. 保障纵向（最终兜底）
-  if (canvas.width > canvas.height) {
-    canvas = rotateCanvas(canvas, 270);
-  }
-
   return canvas;
+}
+
+/** 计算可读性评分：行/列投影方差 */
+function readabilityScore(mat) {
+  const bw = new cv.Mat();
+  const gray = new cv.Mat();
+  cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+  cv.threshold(gray, bw, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+
+  const rows = bw.rows, cols = bw.cols;
+  const rowSums = new Float64Array(rows);
+  const colSums = new Float64Array(cols);
+
+  for (let r = 0; r < rows; r++) {
+    let sum = 0;
+    for (let c = 0; c < cols; c++) {
+      if (bw.ucharPtr(r, c)[0] === 0) sum++; // 黑像素计数
+    }
+    rowSums[r] = sum;
+  }
+  for (let c = 0; c < cols; c++) {
+    let sum = 0;
+    for (let r = 0; r < rows; r++) {
+      if (bw.ucharPtr(r, c)[0] === 0) sum++;
+    }
+    colSums[c] = sum;
+  }
+
+  const rowVar = variance(rowSums);
+  const colVar = variance(colSums);
+
+  bw.delete(); gray.delete();
+  return { rowVar, colVar };
+}
+
+function variance(arr) {
+  let n = arr.length;
+  if (n === 0) return 0;
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += arr[i];
+  mean /= n;
+  let v = 0;
+  for (let i = 0; i < n; i++) {
+    let d = arr[i] - mean;
+    v += d * d;
+  }
+  return v / n;
+}
+
+/** Mat 旋转为指定角度（0/90/180/270） */
+function rotateMat(mat, deg) {
+  let out = new cv.Mat();
+  if (deg === 0) {
+    out = mat.clone();
+  } else if (deg === 90) {
+    cv.rotate(mat, out, cv.ROTATE_90_CLOCKWISE);
+  } else if (deg === 180) {
+    cv.rotate(mat, out, cv.ROTATE_180);
+  } else if (deg === 270) {
+    cv.rotate(mat, out, cv.ROTATE_90_COUNTERCLOCKWISE);
+  } else {
+    out = mat.clone();
+  }
+  return out;
 }
 
 /** Mat -> Canvas */
