@@ -3,23 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 高清扫描 - 最终修正版</title>
+    <title>AI 扫描 - 极致稳定版</title>
     <style>
-        body { margin: 0; background: #000; font-family: system-ui; color: white; overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
-        #stage { flex: 1; position: relative; display: flex; justify-content: center; align-items: center; background: #111; overflow: hidden; }
+        body { margin: 0; background: #000; font-family: system-ui; color: white; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+        #stage { flex: 1; position: relative; background: #111; display: flex; justify-content: center; align-items: center; }
         video, canvas { max-width: 100%; max-height: 100%; position: absolute; }
-        #canvasOutput { display: none; z-index: 10; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
-        .status-bar { position: fixed; top: 20px; width: 100%; text-align: center; z-index: 100; pointer-events: none; }
-        .badge { background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; border: 1px solid #444; color: #00ff00; font-size: 14px; }
-        .controls { height: 100px; background: #000; display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #333; }
-        .btn { background: none; border: none; color: white; display: flex; flex-direction: column; align-items: center; gap: 5px; opacity: 0.3; pointer-events: none; }
-        .btn.ready { opacity: 1; pointer-events: auto; }
-        .shutter { width: 50px; height: 50px; background: white; border-radius: 50%; border: 4px solid #333; }
+        #canvasOutput { display: none; z-index: 10; border: 2px solid #555; }
+        .status-bar { position: fixed; top: 15px; width: 100%; text-align: center; z-index: 100; }
+        .badge { background: rgba(0,255,0,0.2); color: #00ff00; padding: 6px 15px; border-radius: 15px; font-size: 13px; border: 1px solid #00ff00; }
+        .controls { height: 90px; background: #000; display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #222; }
+        .btn { background: none; border: none; color: white; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; }
+        .shutter { width: 50px; height: 50px; background: white; border-radius: 50%; border: 3px solid #333; }
+        #fileInput { display: none; }
     </style>
 </head>
 <body>
 
-<div class="status-bar"><span class="badge" id="msg">载入中...</span></div>
+<div class="status-bar"><span class="badge" id="msg">引擎准备中...</span></div>
 
 <div id="stage">
     <video id="video" autoplay playsinline></video>
@@ -27,140 +27,139 @@
 </div>
 
 <div class="controls">
-    <button id="btn-file" class="btn" onclick="document.getElementById('fileInput').click()">
+    <button class="btn" onclick="document.getElementById('fileInput').click()">
         <div style="width:20px; height:20px; border:2px solid white;"></div>
         <span>导入</span>
     </button>
-    <input type="file" id="fileInput" hidden accept="image/*">
+    <input type="file" id="fileInput" accept="image/*">
 
-    <button id="btn-snap" class="btn" onclick="capture()">
+    <button class="btn" onclick="capture()">
         <div class="shutter"></div>
         <span>拍照</span>
     </button>
 
-    <button class="btn ready" onclick="location.reload()">
+    <button class="btn" onclick="location.reload()">
         <div style="width:20px; height:20px; border:2px solid white; border-radius:50%;"></div>
         <span>重置</span>
     </button>
 </div>
 
 <script>
-    var Module = {
-        onRuntimeInitialized() {
-            document.querySelectorAll('.btn').forEach(b => b.classList.add('ready'));
-            document.getElementById('msg').innerText = "AI 引擎就绪";
-            startCam();
-        }
-    };
+    var Module = { onRuntimeInitialized() { 
+        document.getElementById('msg').innerText = "AI 引擎已就绪"; 
+        startCam(); 
+    }};
 
-    function startCam() {
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-            .then(s => { document.getElementById('video').srcObject = s; })
-            .catch(e => { document.getElementById('msg').innerText = "请使用导入功能"; });
+    async function startCam() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+            document.getElementById('video').srcObject = stream;
+        } catch (e) { document.getElementById('msg').innerText = "请使用导入功能"; }
     }
 
-    // 强化版四点排序逻辑
-    function getSortedPoints(pts) {
-        let center = pts.reduce((acc, p) => ({x: acc.x + p.x/4, y: acc.y + p.y/4}), {x:0, y:0});
-        
-        // 按照相对于中心点的角度排序：左上, 右上, 右下, 左下
-        let sorted = pts.sort((a, b) => {
-            return Math.atan2(a.y - center.y, a.x - center.x) - Math.atan2(b.y - center.y, b.x - center.x);
-        });
-
-        // 调整起始点（atan2 从右侧开始，我们需要从左上开始）
-        // 标准顺序：TL(Index 2), TR(Index 3), BR(Index 0), BL(Index 1) 取决于坐标系
-        // 这里直接用简单的极值法二次校验
+    // 严谨的点位对齐逻辑
+    function sortQuadPoints(pts) {
+        let sorted = new Array(4);
         let sums = pts.map(p => p.x + p.y);
         let diffs = pts.map(p => p.y - p.x);
+
+        sorted[0] = pts[sums.indexOf(Math.min(...sums))]; // TL: x+y 最小
+        sorted[2] = pts[sums.indexOf(Math.max(...sums))]; // BR: x+y 最大
+        sorted[1] = pts[diffs.indexOf(Math.min(...diffs))]; // TR: y-x 最小
+        sorted[3] = pts[diffs.indexOf(Math.max(...diffs))]; // BL: y-x 最大
         
-        return [
-            pts[sums.indexOf(Math.min(...sums))], // TL
-            pts[diffs.indexOf(Math.min(...diffs))], // TR
-            pts[sums.indexOf(Math.max(...sums))], // BR
-            pts[diffs.indexOf(Math.max(...diffs))]  // BL
-        ];
+        return sorted;
     }
 
-    function process(source) {
+    function processImage(source) {
         let src = cv.imread(source);
         let dst = new cv.Mat();
         
-        // 1. 预处理：降噪 + 边缘检测
+        // 1. 灰度化 + 适度模糊（降噪，防止出现杂乱线条）
         cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-        cv.GaussianBlur(dst, dst, new cv.Size(5, 5), 0);
-        cv.Canny(dst, dst, 50, 150);
+        let ksize = new cv.Size(5, 5);
+        cv.GaussianBlur(dst, dst, ksize, 0);
 
-        // 2. 轮廓提取
+        // 2. 边缘检测
+        let edges = new cv.Mat();
+        cv.Canny(dst, edges, 75, 200);
+
+        // 3. 寻找最大的四边形轮廓
         let contours = new cv.MatVector();
         let hierarchy = new cv.Mat();
-        cv.findContours(dst, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-        let maxArea = 0, poly = new cv.Mat();
+        let maxArea = 0, bestPoints = null;
+
         for (let i = 0; i < contours.size(); ++i) {
             let cnt = contours.get(i);
             let peri = cv.arcLength(cnt, true);
             let approx = new cv.Mat();
-            cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+            // 这里的 0.05 增大了简化力度，确保边缘更“直”
+            cv.approxPolyDP(cnt, approx, 0.05 * peri, true);
             
             if (approx.rows == 4) {
                 let area = cv.contourArea(approx);
                 if (area > maxArea) {
                     maxArea = area;
-                    approx.copyTo(poly);
+                    bestPoints = [];
+                    for (let j = 0; j < 4; j++) {
+                        bestPoints.push({ x: approx.data32S[j * 2], y: approx.data32S[j * 2 + 1] });
+                    }
                 }
             }
             approx.delete();
         }
 
-        if (maxArea > 5000) {
-            let rawPts = [];
-            for (let i = 0; i < 4; i++) {
-                rawPts.push({ x: poly.data32S[i * 2], y: poly.data32S[i * 2 + 1] });
-            }
+        let resultMat = new cv.Mat();
+        const outW = 800, outH = 1131;
 
-            let sorted = getSortedPoints(rawPts);
-
-            // 3. 透视变换
-            let warped = new cv.Mat();
-            const width = 800, height = 1131;
+        // 如果找到了合理的四边形
+        if (maxArea > (src.rows * src.cols * 0.1)) {
+            let sorted = sortQuadPoints(bestPoints);
             let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
                 sorted[0].x, sorted[0].y, sorted[1].x, sorted[1].y,
                 sorted[2].x, sorted[2].y, sorted[3].x, sorted[3].y
             ]);
-            let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, width, 0, width, height, 0, height]);
+            let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, outW, 0, outW, outH, 0, outH]);
             let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
-            cv.warpPerspective(src, warped, M, new cv.Size(width, height));
+            cv.warpPerspective(src, resultMat, M, new cv.Size(outW, outH));
             
-            // 4. 优化二值化参数：针对文字稿件优化
-            cv.cvtColor(warped, warped, cv.COLOR_RGBA2GRAY);
-            // 增大 block size (21) 和 constant (15) 以减少背景燥点
-            cv.adaptiveThreshold(warped, warped, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 15);
-            
-            document.getElementById('canvasOutput').style.display = 'block';
-            cv.imshow('canvasOutput', warped);
-            
-            warped.delete(); srcCoords.delete(); dstCoords.delete(); M.delete();
+            srcCoords.delete(); dstCoords.delete(); M.delete();
         } else {
-            alert("未能精确识别表格边界，请确保纸张完全进入镜头且背景为深色");
+            // 降级方案：未找到边界则直接进行自适应裁剪或全图增强
+            console.log("未检测到有效边界，切换全图增强");
+            cv.resize(src, resultMat, new cv.Size(outW, outH), 0, 0, cv.INTER_LINEAR);
         }
-        src.delete(); dst.delete(); contours.delete(); hierarchy.delete(); poly.delete();
+
+        // 4. 文档增强（去底色）
+        cv.cvtColor(resultMat, resultMat, cv.COLOR_RGBA2GRAY);
+        // 关键参数调整：blockSize=25, C=10。增加 C 值可以让背景更白，减少杂点
+        cv.adaptiveThreshold(resultMat, resultMat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 25, 12);
+        
+        let canvas = document.getElementById('canvasOutput');
+        canvas.style.display = 'block';
+        cv.imshow('canvasOutput', resultMat);
+        
+        // 释放所有资源
+        src.delete(); dst.delete(); edges.delete(); contours.delete(); hierarchy.delete(); resultMat.delete();
     }
 
-    function capture() { process(document.getElementById('video')); }
+    function capture() { processImage(document.getElementById('video')); }
 
     document.getElementById('fileInput').onchange = (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
         const reader = new FileReader();
         reader.onload = (ev) => {
             const img = new Image();
-            img.onload = () => process(img);
+            img.onload = () => processImage(img);
             img.src = ev.target.result;
         };
-        reader.readAsDataURL(e.target.files[0]);
+        reader.readAsDataURL(file);
     };
 </script>
 
 <script async src="opencv.js"></script>
-
 </body>
 </html>
