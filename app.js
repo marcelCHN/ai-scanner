@@ -1,6 +1,6 @@
 /**
- * Pad 文档扫描器（A4 自动识别 + 透视与角度校正 + 去杂物 + 高清增强）
- * 依赖：OpenCV.js（本地）、浏览器 getUserMedia
+ * Pad 文档扫描器（A4 自动识别 + 透视与角度校正 + 去杂物 + 高清增强 + 文字方向矫正）
+ * 依赖：OpenCV.js（本地）、浏览器 getUserMedia、Tesseract.js（OSD）
  * 支持：相机拍摄与本地图片上传两种输入
  */
 
@@ -16,6 +16,7 @@ const downloadJpgBtn = document.getElementById('downloadJpg');
 const enhanceModeEl = document.getElementById('enhanceMode');
 const outputSizeEl = document.getElementById('outputSize');
 const fileInput = document.getElementById('fileInput');
+const textOrientationFixEl = document.getElementById('textOrientationFix');
 
 let stream = null;
 let processing = false;
@@ -94,15 +95,36 @@ snapBtn.addEventListener('click', async () => {
   if (!stream) return;
   const frame = captureFrame();
   const quad = lastQuad || detectQuad(frame);
-  if (!quad) {
-    statusEl.textContent = '未检测到 A4 四边形，已保存原图。';
-    const result = enhanceAndWarp(frame, null);
-    renderResult(result);
-  } else {
-    statusEl.textContent = '已拍摄并生成扫描件。';
-    const result = enhanceAndWarp(frame, quad);
-    renderResult(result);
-  }
+  await processAndRender(frame, quad, '拍摄');
+});
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  statusEl.textContent = '正在读取图片…';
+
+  const img = new Image();
+  img.onload = async () => {
+    const canvas = document.createElement('canvas');
+    const maxSide = 2000;
+    const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const quad = detectQuad(canvas);
+    await processAndRender(canvas, quad, '图片上传');
+
+    overlay.width = canvas.width;
+    overlay.height = canvas.height;
+    const overlayCtx = overlay.getContext('2d');
+    overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+  };
+  img.onerror = () => {
+    statusEl.textContent = '图片读取失败，请更换文件。';
+  };
+  img.src = URL.createObjectURL(file);
 });
 
 autoCaptureEl.addEventListener('change', () => {
@@ -117,44 +139,6 @@ downloadPngBtn.addEventListener('click', () => {
 downloadJpgBtn.addEventListener('click', () => {
   const url = resultCanvas.toDataURL('image/jpeg', 0.95);
   downloadDataUrl(url, 'scan.jpg');
-});
-
-// 图片上传生成扫描件
-fileInput.addEventListener('change', async (e) => {
-  const file = e.target.files && e.target.files[0];
-  if (!file) return;
-  statusEl.textContent = '正在读取图片…';
-
-  const img = new Image();
-  img.onload = () => {
-    const canvas = document.createElement('canvas');
-    const maxSide = 2000; // 上传图片处理的最大边，避免超大图占用内存
-    const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-    canvas.width = Math.round(img.width * scale);
-    canvas.height = Math.round(img.height * scale);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-    const quad = detectQuad(canvas);
-    if (!quad) {
-      statusEl.textContent = '未检测到 A4 四边形，已增强原图。';
-      const result = enhanceAndWarp(canvas, null);
-      renderResult(result);
-    } else {
-      statusEl.textContent = '已生成扫描件（图片上传）。';
-      const result = enhanceAndWarp(canvas, quad);
-      renderResult(result);
-    }
-
-    overlay.width = canvas.width;
-    overlay.height = canvas.height;
-    const overlayCtx = overlay.getContext('2d');
-    overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-  };
-  img.onerror = () => {
-    statusEl.textContent = '图片读取失败，请更换文件。';
-  };
-  img.src = URL.createObjectURL(file);
 });
 
 function downloadDataUrl(url, filename) {
@@ -193,9 +177,7 @@ function processFrame() {
     statusEl.textContent = '已检测到疑似 A4（稳定度 ' + a4StableCounter + '/10）';
     a4StableCounter = Math.min(a4StableCounter + 1, 10);
     if (autoCaptureEl.checked && a4StableCounter >= 8) {
-      const result = enhanceAndWarp(frameCanvas, quad);
-      renderResult(result);
-      statusEl.textContent = '自动抓拍成功，已生成扫描件。';
+      processAndRender(frameCanvas, quad, '自动抓拍');
       a4StableCounter = 0;
     }
   } else {
@@ -230,96 +212,25 @@ function drawOverlay(quad) {
   ctx.stroke();
 }
 
-/**
- * 检测四边形并校验是否接近 A4 比例
- * 返回按 TL, TR, BR, BL 顺序排列的点数组 [{x,y},...]
- */
-function detectQuad(canvas) {
-  const src = cv.imread(canvas);
-  try {
-    let dst = new cv.Mat();
-    cv.cvtColor(src, src, cv.COLOR_RGBA2RGB);
-    cv.cvtColor(src, dst, cv.COLOR_RGB2GRAY);
-
-    // 光照均衡：模糊估计背景并减法，提升边缘
-    let bg = new cv.Mat();
-    cv.GaussianBlur(dst, bg, new cv.Size(0, 0), 25);
-    let norm = new cv.Mat();
-    cv.subtract(dst, bg, norm);
-    cv.normalize(norm, norm, 0, 255, cv.NORM_MINMAX);
-
-    // 边缘 + 轮廓
-    let edges = new cv.Mat();
-    cv.Canny(norm, edges, 50, 150);
-
-    let contours = new cv.MatVector();
-    let hierarchy = new cv.Mat();
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    let best = null;
-    let bestScore = 0;
-    for (let i = 0; i < contours.size(); i++) {
-      const cnt = contours.get(i);
-      const peri = cv.arcLength(cnt, true);
-      const approx = new cv.Mat();
-      cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-      if (approx.rows === 4) {
-        const rect = cv.boundingRect(approx);
-        const area = rect.width * rect.height;
-        const areaRatio = area / (src.cols * src.rows);
-        if (areaRatio < 0.15) { approx.delete(); continue; }
-
-        const pts = [];
-        for (let r = 0; r < approx.rows; r++) {
-          pts.push({ x: approx.intAt(r, 0), y: approx.intAt(r, 1) });
-        }
-        const ordered = orderQuad(pts);
-        const w = dist(ordered[0], ordered[1]);
-        const h = dist(ordered[0], ordered[3]);
-        const ratio = w / h;
-        const rDiff = Math.abs(ratio - A4_RATIO_W2H);
-        const score = areaRatio * (1 - rDiff);
-        if (score > bestScore) {
-          bestScore = score;
-          best = ordered;
-        }
-        approx.delete();
-      } else {
-        approx.delete();
-      }
-    }
-
-    edges.delete(); contours.delete(); hierarchy.delete(); dst.delete(); bg.delete(); norm.delete();
-
-    if (!best) { src.delete(); return null; }
-    src.delete();
-    return best;
-  } catch (e) {
-    console.error(e);
-    src.delete();
-    return null;
+/** 高层流程：透视矫正 + 增强 + 文字方向矫正 + 渲染 */
+async function processAndRender(canvas, quad, sourceLabel='') {
+  if (!quad) {
+    statusEl.textContent = `未检测到 A4 四边形（${sourceLabel}），已增强原图。`;
+  } else {
+    statusEl.textContent = `已生成扫描件（${sourceLabel}）。`;
   }
-}
 
-function orderQuad(points) {
-  const pts = points.slice();
-  const sumSort = [...pts].sort((a,b)=> (a.x + a.y) - (b.x + b.y));
-  const diffSort = [...pts].sort((a,b)=> (a.x - a.y) - (b.x - b.y));
-  const tl = sumSort[0];
-  const br = sumSort[sumSort.length - 1];
-  const tr = diffSort[diffSort.length - 1];
-  const bl = diffSort[0];
-  return [tl, tr, br, bl];
-}
+  const warpedMat = enhanceAndWarp(canvas, quad); // Mat（增强前的透视已做）
+  const orientedCanvas = await ensureUprightByText(warpedMat); // Canvas
+  cv.imshow(resultCanvas, cv.imread(orientedCanvas));
+  warpedMat.delete();
 
-function dist(a,b){
-  const dx = a.x - b.x; const dy = a.y - b.y;
-  return Math.sqrt(dx*dx + dy*dy);
+  downloadPngBtn.disabled = false;
+  downloadJpgBtn.disabled = false;
 }
 
 /**
- * 透视矫正 + 角度校正（确保 100% 正向）+ 增强与去杂物
- * quad: TL,TR,BR,BL；若为 null，则直接增强原图
+ * 透视矫正 + 角度校正（确保纵向输出）+ 基础增强
  */
 function enhanceAndWarp(canvas, quad) {
   const src = cv.imread(canvas);
@@ -360,12 +271,13 @@ function enhanceAndWarp(canvas, quad) {
     warped = src.clone();
   }
 
+  // 增强
   let enhanced = enhanceImage(warped, enhanceModeEl.value);
-
   src.delete(); warped.delete();
   return enhanced; // Mat
 }
 
+/** 基础增强：光照均衡 + 阈值 + 去噪（或彩色增强） */
 function enhanceImage(mat, mode='auto') {
   let rgb = new cv.Mat();
   cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
@@ -393,7 +305,7 @@ function enhanceImage(mat, mode='auto') {
     cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
     let channels = new cv.MatVector();
     cv.split(lab, channels);
-    cv.equalizeHist(channels.get(0), channels.get(0)); // L 通道直方图均衡
+    cv.equalizeHist(channels.get(0), channels.get(0)); // L 通道均衡
     cv.merge(channels, lab);
     cv.cvtColor(lab, out, cv.COLOR_Lab2RGB);
     channels.delete(); lab.delete();
@@ -412,13 +324,97 @@ function enhanceImage(mat, mode='auto') {
   }
 
   rgb.delete(); gray.delete(); bg.delete(); norm.delete(); kernel.delete();
-
   return out;
 }
 
-function renderResult(mat) {
-  cv.imshow(resultCanvas, mat);
-  mat.delete();
-  downloadPngBtn.disabled = false;
-  downloadJpgBtn.disabled = false;
+/**
+ * 文字方向矫正：优先使用 Tesseract.detect（OSD），失败则备用 Hough 估计
+ * 输入：增强后的 Mat
+ * 输出：Canvas（正向）
+ */
+async function ensureUprightByText(enhancedMat) {
+  // 把 Mat 显示到临时 canvas 供识别
+  const tmpCanvas = document.createElement('canvas');
+  cv.imshow(tmpCanvas, enhancedMat);
+
+  // 若未启用或 Tesseract 不存在，走备用估计
+  if (!textOrientationFixEl.checked || typeof Tesseract === 'undefined') {
+    const deg = estimateQuarterRotationByHough(tmpCanvas);
+    return rotateCanvas(tmpCanvas, deg);
+  }
+
+  try {
+    // 使用 OSD（Orientation and Script Detection）
+    const detection = await Tesseract.detect(tmpCanvas);
+    // 新版返回可能为 detection.data 或 detection 中的 orientation，做兼容：
+    const data = detection.data || detection;
+    const deg = (data.orientation && data.orientation.degrees) || data.degrees || 0;
+
+    // 仅接受 0/90/180/270，非这几种则走备用估计
+    const allowed = new Set([0, 90, 180, 270]);
+    if (!allowed.has(deg)) {
+      const fallbackDeg = estimateQuarterRotationByHough(tmpCanvas);
+      return rotateCanvas(tmpCanvas, fallbackDeg);
+    }
+    return rotateCanvas(tmpCanvas, deg);
+  } catch (e) {
+    console.warn('Tesseract OSD 失败，改用备用估计：', e);
+    const deg = estimateQuarterRotationByHough(tmpCanvas);
+    return rotateCanvas(tmpCanvas, deg);
+  }
+}
+
+/** 备用估计：通过 Hough 线倾角，粗判 0/90（无法可靠判 180） */
+function estimateQuarterRotationByHough(canvas) {
+  try {
+    const src = cv.imread(canvas);
+    let gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    let edges = new cv.Mat();
+    cv.Canny(gray, edges, 50, 150);
+
+    let lines = new cv.Mat();
+    cv.HoughLines(edges, lines, 1, Math.PI/180, 120); // 参数可调
+
+    // 统计角度聚类，判断是否接近竖排（~90°）或横排（~0°）
+    let countNear0 = 0;
+    let countNear90 = 0;
+    for (let i = 0; i < lines.rows; i++) {
+      const rho = lines.data32F[i*2];
+      const theta = lines.data32F[i*2 + 1];
+      // 以度计算
+      const deg = theta * 180 / Math.PI;
+      // 接近 0°（或 180°）记入横排
+      if (Math.min(Math.abs(deg - 0), Math.abs(deg - 180)) < 10) countNear0++;
+      // 接近 90°记入竖排
+      if (Math.abs(deg - 90) < 10) countNear90++;
+    }
+    src.delete(); gray.delete(); edges.delete(); lines.delete();
+
+    // 若竖线占优，旋转 90；否则保持 0（无法区分 180）
+    if (countNear90 > countNear0 * 1.5) return 90;
+    return 0;
+  } catch (e) {
+    console.warn('Hough 估计失败：', e);
+    return 0;
+  }
+}
+
+/** 旋转 Canvas 到指定角度（0/90/180/270） */
+function rotateCanvas(inputCanvas, deg) {
+  const rad = deg * Math.PI / 180;
+  let outW = inputCanvas.width;
+  let outH = inputCanvas.height;
+  if (deg === 90 || deg === 270) {
+    outW = inputCanvas.height;
+    outH = inputCanvas.width;
+  }
+  const out = document.createElement('canvas');
+  out.width = outW; out.height = outH;
+  const ctx = out.getContext('2d');
+
+  ctx.translate(outW / 2, outH / 2);
+  ctx.rotate(rad);
+  ctx.drawImage(inputCanvas, -inputCanvas.width / 2, -inputCanvas.height / 2);
+  return out;
 }
