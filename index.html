@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 高清扫描 - 极速版</title>
+    <title>AI 高清扫描 - 本地加速版</title>
     <style>
         :root { --accent: #007AFF; }
         body { margin: 0; background: #000; font-family: system-ui; color: white; overflow: hidden; }
@@ -15,7 +15,7 @@
         .badge { background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; font-size: 14px; border: 1px solid #444; color: #00ff00; }
         .controls { height: 140px; background: rgba(0,0,0,0.9); display: flex; justify-content: space-around; align-items: center; z-index: 100; }
         .btn { display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: pointer; background: none; border: none; color: white; }
-        .btn-main { width: 70px; height: 70px; background: white; border-radius: 50%; border: 5px solid #333; transition: 0.2s; }
+        .btn-main { width: 70px; height: 70px; background: white; border-radius: 50%; border: 5px solid #333; }
         .btn-main:active { transform: scale(0.9); background: #ccc; }
         .btn:disabled { opacity: 0.3; }
         .icon { width: 24px; height: 24px; border: 2px solid white; border-radius: 4px; }
@@ -24,7 +24,7 @@
 <body>
 
 <div id="status">
-    <span class="badge" id="msg">正在通过高速通道初始化 AI...</span>
+    <span class="badge" id="msg">正在从本地仓库载入 AI...</span>
 </div>
 
 <div class="viewport">
@@ -53,7 +53,6 @@
 </div>
 
 <script>
-    // 强制全局监听 OpenCV 加载
     var Module = {
         onRuntimeInitialized() {
             onCvLoaded();
@@ -61,121 +60,104 @@
     };
 
     function onCvLoaded() {
-        console.log("OpenCV Ready");
         const msg = document.getElementById('msg');
         const shutter = document.getElementById('shutter');
         msg.innerText = "AI 引擎就绪";
         shutter.disabled = false;
         initCamera();
     }
-</script>
 
-<script async src="https://lf3-cdn-tos.bytecdntp.com/cdn/expire-1-M/opencv/4.5.1/opencv.js"></script>
-
-<script>
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvasOutput');
-const msg = document.getElementById('msg');
-
-async function initCamera() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }
-        });
-        video.srcObject = stream;
-        video.onloadedmetadata = () => {
-            video.play();
-            msg.innerText = "请将 A4 纸置于深色背景中心";
-        };
-    } catch (err) {
-        msg.innerText = "相机启动失败 (请检查 HTTPS 或权限)";
-        msg.style.color = "#ff4444";
+    async function initCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                video.play();
+                msg.innerText = "请对准 A4 纸并拍照";
+            };
+        } catch (err) {
+            msg.innerText = "相机启动失败，请检查 HTTPS";
+        }
     }
-}
 
-function orderPoints(ptsArr) {
-    let rect = new Array(4);
-    let sums = ptsArr.map(p => p.x + p.y);
-    let diffs = ptsArr.map(p => p.y - p.x);
-    rect[0] = ptsArr[sums.indexOf(Math.min(...sums))]; // TL
-    rect[2] = ptsArr[sums.indexOf(Math.max(...sums))]; // BR
-    rect[1] = ptsArr[diffs.indexOf(Math.min(...diffs))]; // TR
-    rect[3] = ptsArr[diffs.indexOf(Math.max(...diffs))]; // BL
-    return [rect[0].x, rect[0].y, rect[1].x, rect[1].y, rect[2].x, rect[2].y, rect[3].x, rect[3].y];
-}
+    function orderPoints(ptsArr) {
+        let rect = new Array(4);
+        let sums = ptsArr.map(p => p.x + p.y);
+        let diffs = ptsArr.map(p => p.y - p.x);
+        rect[0] = ptsArr[sums.indexOf(Math.min(...sums))]; // TL
+        rect[2] = ptsArr[sums.indexOf(Math.max(...sums))]; // BR
+        rect[1] = ptsArr[diffs.indexOf(Math.min(...diffs))]; // TR
+        rect[3] = ptsArr[diffs.indexOf(Math.max(...diffs))]; // BL
+        return [rect[0].x, rect[0].y, rect[1].x, rect[1].y, rect[2].x, rect[2].y, rect[3].x, rect[3].y];
+    }
 
-function process(source) {
-    let src = cv.imread(source);
-    let dst = new cv.Mat();
-    cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(dst, dst, new cv.Size(5, 5), 0);
-    cv.Canny(dst, dst, 75, 200);
+    function process(source) {
+        let src = cv.imread(source);
+        let dst = new cv.Mat();
+        cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+        cv.GaussianBlur(dst, dst, new cv.Size(5, 5), 0);
+        cv.Canny(dst, dst, 75, 200);
 
-    let contours = new cv.MatVector();
-    let hierarchy = new cv.Mat();
-    cv.findContours(dst, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        let contours = new cv.MatVector();
+        let hierarchy = new cv.Mat();
+        cv.findContours(dst, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-    let maxArea = 0;
-    let poly = new cv.Mat();
-
-    for (let i = 0; i < contours.size(); ++i) {
-        let cnt = contours.get(i);
-        let peri = cv.arcLength(cnt, true);
-        let approx = new cv.Mat();
-        cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-        if (approx.rows == 4) {
-            let area = cv.contourArea(approx);
-            if (area > maxArea) {
-                maxArea = area;
-                approx.copyTo(poly);
+        let maxArea = 0, poly = new cv.Mat();
+        for (let i = 0; i < contours.size(); ++i) {
+            let cnt = contours.get(i);
+            let peri = cv.arcLength(cnt, true);
+            let approx = new cv.Mat();
+            cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+            if (approx.rows == 4) {
+                let area = cv.contourArea(approx);
+                if (area > maxArea) { maxArea = area; approx.copyTo(poly); }
             }
+            approx.delete();
         }
-        approx.delete();
+
+        if (maxArea > 1000) {
+            let pts = [];
+            for (let i = 0; i < 4; i++) { pts.push({ x: poly.data32S[i * 2], y: poly.data32S[i * 2 + 1] }); }
+            let sortedPts = orderPoints(pts);
+            const w = 1000, h = 1414;
+            let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, sortedPts);
+            let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, w, 0, w, h, 0, h]);
+            let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
+            let warped = new cv.Mat();
+            cv.warpPerspective(src, warped, M, new cv.Size(w, h));
+            cv.cvtColor(warped, warped, cv.COLOR_RGBA2GRAY);
+            cv.adaptiveThreshold(warped, warped, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 19, 10);
+
+            canvas.style.display = 'block';
+            cv.imshow('canvasOutput', warped);
+            msg.innerText = "扫描成功";
+            warped.delete(); srcCoords.delete(); dstCoords.delete(); M.delete();
+        } else {
+            alert("未检测到纸张边缘");
+        }
+        src.delete(); dst.delete(); contours.delete(); hierarchy.delete(); poly.delete();
     }
 
-    if (maxArea > 1000) {
-        let pts = [];
-        for (let i = 0; i < 4; i++) {
-            pts.push({ x: poly.data32S[i * 2], y: poly.data32S[i * 2 + 1] });
-        }
-        let sortedPts = orderPoints(pts);
-        const w = 1000, h = 1414;
-        let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, sortedPts);
-        let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, w, 0, w, h, 0, h]);
-        let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
-        let warped = new cv.Mat();
-        cv.warpPerspective(src, warped, M, new cv.Size(w, h));
-        cv.cvtColor(warped, warped, cv.COLOR_RGBA2GRAY);
-        cv.adaptiveThreshold(warped, warped, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 19, 10);
+    function captureAndProcess() { process(video); }
 
-        canvas.style.display = 'block';
-        cv.imshow('canvasOutput', warped);
-        msg.innerText = "扫描已完成";
-        warped.delete(); srcCoords.delete(); dstCoords.delete(); M.delete();
-    } else {
-        alert("无法定位 A4 边界，请调整角度和光框");
-    }
-    src.delete(); dst.delete(); contours.delete(); hierarchy.delete(); poly.delete();
-}
-
-function captureAndProcess() { process(video); }
-
-document.getElementById('fileInput').onchange = (e) => {
-    const file = e.target.files[0];
-    if(!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-        const img = new Image();
-        img.onload = () => process(img);
-        img.src = ev.target.result;
+    document.getElementById('fileInput').onchange = (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const img = new Image();
+            img.onload = () => process(img);
+            img.src = ev.target.result;
+        };
+        reader.readAsDataURL(file);
     };
-    reader.readAsDataURL(file);
-};
 
-function reset() {
-    canvas.style.display = 'none';
-    msg.innerText = "请对准 A4 纸张";
-}
+    function reset() { canvas.style.display = 'none'; msg.innerText = "请对准 A4 纸张"; }
 </script>
+
+<script async src="opencv.js"></script>
+
 </body>
 </html>
