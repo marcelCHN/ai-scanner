@@ -230,7 +230,6 @@ async function processAndRender(canvas, quad, sourceLabel='') {
   downloadPngBtn.disabled = false;
   downloadJpgBtn.disabled = false;
 
-  // 释放 Mat
   enhancedMat.delete();
 }
 
