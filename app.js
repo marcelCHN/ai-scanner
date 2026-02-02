@@ -1,9 +1,6 @@
 /**
  * Pad 文档扫描器（A4 自动识别 + 透视无失真 + OCR优先的自动正向 + 等比输出为纵向A4）
- * 方向判定优先级：
- * 1) Tesseract OSD（detect） → 将返回的 degrees 旋转到正向
- * 2) 兜底：对 0/90/180/270 综合评分（投影方差 + 形态响应 + Hough 连续性），选“最可读”的方向
- * 3) 最后强制纵向（portrait）
+ * 本地化 Tesseract：不依赖 CDN；通过自定义 worker/core/lang 路径
  */
 
 const videoEl = document.getElementById('video');
@@ -18,8 +15,6 @@ const downloadJpgBtn = document.getElementById('downloadJpg');
 const enhanceModeEl = document.getElementById('enhanceMode');
 const outputSizeEl = document.getElementById('outputSize');
 const fileInput = document.getElementById('fileInput');
-
-// 可选手动兜底
 const rotateLeftBtn = document.getElementById('rotateLeftBtn');
 const rotateRightBtn = document.getElementById('rotateRightBtn');
 const rotate180Btn = document.getElementById('rotate180Btn');
@@ -31,6 +26,13 @@ let lastQuad = null;
 let latestResultCanvas = null;
 
 const A4_RATIO_W2H = 1 / Math.sqrt(2); // ≈0.707
+
+// Tesseract 本地化路径配置（务必与文件上传位置一致）
+const TESSERACT_CONFIG = {
+  workerPath: './tesseract/tesseract.worker.min.js',
+  corePath: './tesseract/tesseract-core.wasm',
+  langPath: './tesseract/lang-data' // 需要包含 osd.traineddata
+};
 
 function waitCvReady() {
   return new Promise((resolve, reject) => {
@@ -57,7 +59,7 @@ waitCvReady().then(() => {
   snapBtn.disabled = false;
 }).catch(err => {
   console.error(err);
-  statusEl.textContent = 'OpenCV 加载失败，请检查路径与CSP。';
+  statusEl.textContent = 'OpenCV 加载失败，请检查路径。';
 });
 
 startBtn.addEventListener('click', async () => {
@@ -104,8 +106,7 @@ fileInput.addEventListener('change', async (e) => {
     await processAndRender(canvas, quad, '图片上传');
     overlay.width = canvas.width;
     overlay.height = canvas.height;
-    const octx = overlay.getContext('2d');
-    octx.clearRect(0, 0, overlay.width, overlay.height);
+    overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
   };
   img.onerror = () => { statusEl.textContent = '图片读取失败，请重试'; };
   img.src = URL.createObjectURL(file);
@@ -246,54 +247,42 @@ function enhanceImage(mat, mode='auto') {
 async function autoUprightOCRFirst(enhancedMat) {
   let canvas = matToCanvas(enhancedMat);
 
-  // A. 尝试 Tesseract OSD 检测方向（需要 CDN & CSP 放宽）
   const degFromOSD = await getOrientationByOSD(canvas);
   if (degFromOSD !== null) {
-    // 把文字旋转为“正向”（把 detect 返回的角度转正）
     canvas = rotateCanvas(canvas, (360 - (degFromOSD % 360)) % 360);
   } else {
-    // B. 兜底：综合评分挑选最可读方向
     canvas = autoChooseUprightByScoring(enhancedMat);
   }
 
-  // C. 强制纵向（portrait）
   if (canvas.width > canvas.height) canvas = rotateCanvas(canvas, 270);
   return canvas;
 }
 
-/** 使用 Tesseract.detect() 获取文字方向角度（0/90/180/270）。失败返回 null */
+/** 使用本地化配置的 OSD 检测方向；失败返回 null */
 async function getOrientationByOSD(canvas) {
   try {
     if (typeof Tesseract === 'undefined') return null;
-    const res = await Tesseract.detect(canvas);
+    // 传入本地化路径配置
+    const res = await Tesseract.detect(canvas, TESSERACT_CONFIG);
     const data = res.data || res;
-    // 兼容不同版本字段
     const deg = (data.orientation && data.orientation.degrees) || data.degrees;
-    // 有些版本还提供 orientation.confidence；没有就直接使用 deg
     if (typeof deg !== 'number') return null;
     return normalizeDeg(deg);
   } catch (e) {
-    console.warn('OSD 检测失败，使用兜底评分：', e);
+    console.warn('OSD 检测失败（将回退评分法）：', e);
     return null;
   }
 }
 function normalizeDeg(d){ let k=((d%360)+360)%360; if(k>=315||k<45) return 0; if(k<135) return 90; if(k<225) return 180; return 270; }
 
-/**
- * 兜底综合评分（不依赖OCR）：
- * - 对 0/90/180/270：OTSU二值 → 行/列投影方差 → 形态响应（横/竖核） → HoughLinesP 水平线连续性
- * - score = w1*max(rowVar,colVar) + w2*(horizResp - vertResp) + w3*houghHoriz
- * - 选 score 最大角度
- */
+/** 兜底综合评分（不依赖 OCR） */
 function autoChooseUprightByScoring(enhancedMat) {
   const candidates = [0, 90, 180, 270];
   let bestDeg = 0, bestScore = -Infinity;
-
   const w1 = 1.0, w2 = 0.6, w3 = 0.8;
 
   for (const deg of candidates) {
     const rotated = rotateMat(enhancedMat, deg);
-
     const gray = new cv.Mat(); cv.cvtColor(rotated, gray, cv.COLOR_RGBA2GRAY);
     const bw   = new cv.Mat(); cv.threshold(gray, bw, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
 
@@ -329,7 +318,7 @@ function autoChooseUprightByScoring(enhancedMat) {
   return matToCanvas(rotateMat(enhancedMat, bestDeg));
 }
 
-/** 投影方差 */
+/** 计算投影方差 / 形态辅助评分 */
 function projectionVars(bw) {
   const rows = bw.rows, cols = bw.cols;
   const rowSums = new Float64Array(rows), colSums = new Float64Array(cols);
@@ -341,7 +330,7 @@ function blackGain(closed, orig) {
   let gain = 0, base = 0;
   for (let r=0; r<orig.rows; r++) for (let c=0; c<orig.cols; c++) {
     const o = orig.ucharPtr(r,c)[0], k = closed.ucharPtr(r,c)[0];
-    if (o===0) base++; if (o===255 && k===0) gain++; // 新增黑像素
+    if (o===0) base++; if (o===255 && k===0) gain++;
   }
   return base>0 ? gain/base : gain;
 }
@@ -353,9 +342,9 @@ function variance(arr) {
 
 /** 最终等比缩放为 A4 纵向，白底居中 */
 function fitToA4Portrait(uprightCanvas) {
-  const size = outputSizeEl.value; // m/h/uh
+  const size = outputSizeEl.value;
   const targetShort = size === 'm' ? 1600 : (size === 'h' ? 2400 : 3300);
-  const targetLong  = Math.round(targetShort / A4_RATIO_W2H); // ≈ short/0.707
+  const targetLong  = Math.round(targetShort / A4_RATIO_W2H);
   const outW = targetShort, outH = targetLong;
 
   const scale = Math.min(outW / uprightCanvas.width, outH / uprightCanvas.height);
@@ -369,7 +358,7 @@ function fitToA4Portrait(uprightCanvas) {
   return out;
 }
 
-/** Mat 旋转（0/90/180/270） */
+/** Mat 旋转（0/90/180/270） / Mat->Canvas / Canvas旋转 */
 function rotateMat(mat, deg) {
   let out = new cv.Mat();
   if (deg===0) out = mat.clone();
@@ -379,9 +368,7 @@ function rotateMat(mat, deg) {
   else out = mat.clone();
   return out;
 }
-/** Mat -> Canvas */
 function matToCanvas(mat) { const c=document.createElement('canvas'); cv.imshow(c, mat); return c; }
-/** Canvas 旋转（0/90/180/270） */
 function rotateCanvas(inputCanvas, deg) {
   const rad = deg * Math.PI / 180;
   let outW=inputCanvas.width, outH=inputCanvas.height;
@@ -392,7 +379,7 @@ function rotateCanvas(inputCanvas, deg) {
   return out;
 }
 
-/** 四边形检测（A4候选） */
+/** 四边形检测 */
 function detectQuad(canvas) {
   const src = cv.imread(canvas);
   try {
