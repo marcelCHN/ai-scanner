@@ -1,6 +1,9 @@
 /**
- * Pad 文档扫描器（A4 自动识别 + 透视无失真 + 自动正向 + 等比输出为纵向A4）
- * 方向判定：对 0/90/180/270 综合评分（投影方差 + 形态响应 + Hough 连续性），选“最可读”的方向
+ * Pad 文档扫描器（A4 自动识别 + 透视无失真 + OCR优先的自动正向 + 等比输出为纵向A4）
+ * 方向判定优先级：
+ * 1) Tesseract OSD（detect） → 将返回的 degrees 旋转到正向
+ * 2) 兜底：对 0/90/180/270 综合评分（投影方差 + 形态响应 + Hough 连续性），选“最可读”的方向
+ * 3) 最后强制纵向（portrait）
  */
 
 const videoEl = document.getElementById('video');
@@ -16,7 +19,7 @@ const enhanceModeEl = document.getElementById('enhanceMode');
 const outputSizeEl = document.getElementById('outputSize');
 const fileInput = document.getElementById('fileInput');
 
-// 可选：手动兜底
+// 可选手动兜底
 const rotateLeftBtn = document.getElementById('rotateLeftBtn');
 const rotateRightBtn = document.getElementById('rotateRightBtn');
 const rotate180Btn = document.getElementById('rotate180Btn');
@@ -91,7 +94,6 @@ fileInput.addEventListener('change', async (e) => {
   const img = new Image();
   img.onload = async () => {
     const canvas = document.createElement('canvas');
-    // 处理上限，避免超大图占用内存
     const maxSide = 3000;
     const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
     canvas.width = Math.round(img.width * scale);
@@ -163,14 +165,14 @@ function drawOverlay(quad) {
   ctx.closePath(); ctx.stroke();
 }
 
-/** 主流程：透视（无失真） + 增强 + 自动正向 + 输出A4纵向 + 渲染 */
+/** 主流程：透视（无失真） + 增强 + OCR优先的正向 + 输出A4纵向 + 渲染 */
 async function processAndRender(canvas, quad, sourceLabel='') {
   if (!quad) statusEl.textContent = `未检测到 A4 四边形（${sourceLabel}），已增强原图。`;
   else statusEl.textContent = `已生成扫描件（${sourceLabel}）。`;
 
-  const enhancedMat = enhanceAndWarp(canvas, quad);        // 1) 透视矫正（真实宽高）+ 增强
-  const uprightCanvas = autoChooseUpright(enhancedMat);    // 2) 自动选择最可读方向 + 强制纵向
-  const finalCanvas    = fitToA4Portrait(uprightCanvas);   // 3) 等比缩放，白底居中，纵向A4
+  const enhancedMat = enhanceAndWarp(canvas, quad);     // 1) 透视矫正 + 增强
+  const uprightCanvas = await autoUprightOCRFirst(enhancedMat); // 2) OCR优先自动正向（失败则兜底评分）
+  const finalCanvas    = fitToA4Portrait(uprightCanvas);        // 3) 等比缩放，白底居中，纵向A4
 
   latestResultCanvas = finalCanvas;
   const mat = cv.imread(finalCanvas); cv.imshow(resultCanvas, mat); mat.delete();
@@ -184,7 +186,6 @@ function enhanceAndWarp(canvas, quad) {
   let warped = new cv.Mat();
 
   if (quad) {
-    // 真实宽高，避免错认长/短边导致压缩
     const widthA  = dist(quad[2], quad[3]); // BR-BL
     const widthB  = dist(quad[1], quad[0]); // TR-TL
     const heightA = dist(quad[1], quad[2]); // TR-BR
@@ -241,13 +242,50 @@ function enhanceImage(mat, mode='auto') {
   return out;
 }
 
+/** OCR 优先的自动正向，失败则落回综合评分 */
+async function autoUprightOCRFirst(enhancedMat) {
+  let canvas = matToCanvas(enhancedMat);
+
+  // A. 尝试 Tesseract OSD 检测方向（需要 CDN & CSP 放宽）
+  const degFromOSD = await getOrientationByOSD(canvas);
+  if (degFromOSD !== null) {
+    // 把文字旋转为“正向”（把 detect 返回的角度转正）
+    canvas = rotateCanvas(canvas, (360 - (degFromOSD % 360)) % 360);
+  } else {
+    // B. 兜底：综合评分挑选最可读方向
+    canvas = autoChooseUprightByScoring(enhancedMat);
+  }
+
+  // C. 强制纵向（portrait）
+  if (canvas.width > canvas.height) canvas = rotateCanvas(canvas, 270);
+  return canvas;
+}
+
+/** 使用 Tesseract.detect() 获取文字方向角度（0/90/180/270）。失败返回 null */
+async function getOrientationByOSD(canvas) {
+  try {
+    if (typeof Tesseract === 'undefined') return null;
+    const res = await Tesseract.detect(canvas);
+    const data = res.data || res;
+    // 兼容不同版本字段
+    const deg = (data.orientation && data.orientation.degrees) || data.degrees;
+    // 有些版本还提供 orientation.confidence；没有就直接使用 deg
+    if (typeof deg !== 'number') return null;
+    return normalizeDeg(deg);
+  } catch (e) {
+    console.warn('OSD 检测失败，使用兜底评分：', e);
+    return null;
+  }
+}
+function normalizeDeg(d){ let k=((d%360)+360)%360; if(k>=315||k<45) return 0; if(k<135) return 90; if(k<225) return 180; return 270; }
+
 /**
- * 自动选择正向（不依赖OCR）：
+ * 兜底综合评分（不依赖OCR）：
  * - 对 0/90/180/270：OTSU二值 → 行/列投影方差 → 形态响应（横/竖核） → HoughLinesP 水平线连续性
- * - 评分：score = w1*max(rowVar,colVar) + w2*(horizResp - vertResp) + w3*houghHoriz
- * - 选 score 最大角度；最后强制纵向（宽>高则逆时针90）
+ * - score = w1*max(rowVar,colVar) + w2*(horizResp - vertResp) + w3*houghHoriz
+ * - 选 score 最大角度
  */
-function autoChooseUpright(enhancedMat) {
+function autoChooseUprightByScoring(enhancedMat) {
   const candidates = [0, 90, 180, 270];
   let bestDeg = 0, bestScore = -Infinity;
 
@@ -256,14 +294,12 @@ function autoChooseUpright(enhancedMat) {
   for (const deg of candidates) {
     const rotated = rotateMat(enhancedMat, deg);
 
-    // 二值与投影
     const gray = new cv.Mat(); cv.cvtColor(rotated, gray, cv.COLOR_RGBA2GRAY);
     const bw   = new cv.Mat(); cv.threshold(gray, bw, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
 
     const { rowVar, colVar } = projectionVars(bw);
     const projScore = Math.max(rowVar, colVar);
 
-    // 形态响应：横/竖结构核，统计闭运算后的黑像素提升量
     const horizK = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(Math.max(15, Math.floor(bw.cols/80)), 1));
     const vertK  = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(1, Math.max(15, Math.floor(bw.rows/80))));
     const hc = new cv.Mat(); const vc = new cv.Mat();
@@ -272,13 +308,12 @@ function autoChooseUpright(enhancedMat) {
     const horizResp = blackGain(hc, bw); const vertResp = blackGain(vc, bw);
     horizK.delete(); vertK.delete(); hc.delete(); vc.delete();
 
-    // HoughLinesP：统计近水平线的长度总和（越长越规整）
     const edges = new cv.Mat(); cv.Canny(bw, edges, 60, 180);
     const lines = new cv.Mat(); cv.HoughLinesP(edges, lines, 1, Math.PI/180, 80, Math.max(30, Math.floor(bw.cols/50)), 10);
     let houghHoriz = 0;
     for (let i = 0; i < lines.rows; i++) {
-      const x1 = lines.intPtr(i,0)[0], y1 = lines.intPtr(i,0)[1];
-      const x2 = lines.intPtr(i,0)[2], y2 = lines.intPtr(i,0)[3];
+      const ptr = lines.intPtr(i,0);
+      const x1 = ptr[0], y1 = ptr[1], x2 = ptr[2], y2 = ptr[3];
       const dx = x2 - x1, dy = y2 - y1;
       const angle = Math.abs(Math.atan2(dy, dx)) * 180 / Math.PI;
       if (angle < 10 || Math.abs(angle-180) < 10) houghHoriz += Math.hypot(dx, dy);
@@ -291,9 +326,7 @@ function autoChooseUpright(enhancedMat) {
     rotated.delete(); gray.delete(); bw.delete();
   }
 
-  let canvas = matToCanvas(rotateMat(enhancedMat, bestDeg));
-  if (canvas.width > canvas.height) canvas = rotateCanvas(canvas, 270); // 强制纵向
-  return canvas;
+  return matToCanvas(rotateMat(enhancedMat, bestDeg));
 }
 
 /** 投影方差 */
@@ -305,7 +338,6 @@ function projectionVars(bw) {
   return { rowVar: variance(rowSums), colVar: variance(colSums) };
 }
 function blackGain(closed, orig) {
-  // 形态闭运算后黑像素提升量比例，衡量结构核匹配度
   let gain = 0, base = 0;
   for (let r=0; r<orig.rows; r++) for (let c=0; c<orig.cols; c++) {
     const o = orig.ucharPtr(r,c)[0], k = closed.ucharPtr(r,c)[0];
@@ -360,7 +392,7 @@ function rotateCanvas(inputCanvas, deg) {
   return out;
 }
 
-/** 四边形检测 */
+/** 四边形检测（A4候选） */
 function detectQuad(canvas) {
   const src = cv.imread(canvas);
   try {
