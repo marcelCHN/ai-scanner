@@ -3,8 +3,9 @@
  * - 透视无失真 → 增强
  * - 强制纵向（横拍先旋90）
  * - 0/90/180/270 综合评分选最可读
- * - 0°/180°再做上下密度+页眉/脚注特征判定，必要时自动+180°
+ * - 0°/180°再做“上下黑像素密度 + 页眉脚注特征”判定，必要时自动+180°
  * - 2D drawImage 稳定渲染到 resultCanvas
+ * - 多张上传与浏览（上一张/下一张 + 缩略图）
  */
 
 const videoEl = document.getElementById('video');
@@ -22,6 +23,10 @@ const fileInput = document.getElementById('fileInput');
 const rotateLeftBtn = document.getElementById('rotateLeftBtn');
 const rotateRightBtn = document.getElementById('rotateRightBtn');
 const rotate180Btn = document.getElementById('rotate180Btn');
+
+// 多张浏览状态
+let scanCanvases = [];      // 每张扫描结果（最终 A4 纵向）Canvas
+let currentScanIndex = -1;  // 当前浏览索引
 
 let stream = null;
 let processing = false;
@@ -94,31 +99,41 @@ snapBtn.addEventListener('click', async () => {
 });
 
 fileInput.addEventListener('change', async (e) => {
-  const file = e.target.files && e.target.files[0];
-  if (!file) return;
-  statusEl.textContent = '正在读取图片…';
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+  statusEl.textContent = `正在读取 ${files.length} 张图片…`;
 
-  const img = new Image();
-  img.onload = async () => {
-    const canvas = document.createElement('canvas');
-    const maxSide = 3000;
-    const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-    canvas.width = Math.round(img.width * scale);
-    canvas.height = Math.round(img.height * scale);
-    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  // 清空历史（如需保留历史可注释下面行）
+  scanCanvases = [];
+  currentScanIndex = -1;
+  document.getElementById('thumbList').innerHTML = '';
 
-    const quad = detectQuad(canvas);
-    await processAndRender(canvas, quad, '图片上传');
+  let processed = 0;
+  for (const file of files) {
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = async () => {
+        const canvas = document.createElement('canvas');
+        const maxSide = 3000;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    overlay.width = canvas.width;
-    overlay.height = canvas.height;
-    overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
-  };
-  img.onerror = () => { statusEl.textContent = '图片读取失败，请更换文件。'; };
-  img.src = URL.createObjectURL(file);
+        const quad = detectQuad(canvas);
+        const finalCanvas = await pipelineToFinalCanvas(canvas, quad, `图片上传 (${file.name})`);
+        addScanResult(finalCanvas);
+        processed++;
+        statusEl.textContent = `已生成扫描件（${processed}/${files.length}）`;
+        resolve();
+      };
+      img.onerror = () => { statusEl.textContent = `图片读取失败：${file.name}`; resolve(); };
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  if (scanCanvases.length) showScanByIndex(0);
 });
-
-autoCaptureEl?.addEventListener('change', () => { a4StableCounter = 0; });
 
 downloadPngBtn.addEventListener('click', () => {
   const url = resultCanvas.toDataURL('image/png');
@@ -129,7 +144,7 @@ downloadJpgBtn.addEventListener('click', () => {
   downloadDataUrl(url, 'scan.jpg');
 });
 
-// 手动旋转按钮
+// 手动旋转按钮保持原有逻辑
 rotateLeftBtn?.addEventListener('click', () => {
   if (!latestResultCanvas) return;
   latestResultCanvas = rotateCanvas(latestResultCanvas, 270);
@@ -147,12 +162,12 @@ rotateRightBtn?.addEventListener('click', () => {
   ctx.drawImage(latestResultCanvas, 0, 0);
 });
 rotate180Btn?.addEventListener('click', () => {
-  if (!latestResultCanvas) return;
-  latestResultCanvas = rotateCanvas(latestResultCanvas, 180);
+  if (!最新ResultCanvas) return;
+  最新ResultCanvas = rotateCanvas(最新ResultCanvas, 180);
   const ctx = resultCanvas.getContext('2d');
-  resultCanvas.width = latestResultCanvas.width;
-  resultCanvas.height = latestResultCanvas.height;
-  ctx.drawImage(latestResultCanvas, 0, 0);
+  resultCanvas.width = 最新ResultCanvas.width;
+  resultCanvas.height = 最新ResultCanvas.height;
+  ctx.drawImage(最新ResultCanvas, 0, 0);
 });
 
 function downloadDataUrl(url, filename) {
@@ -212,40 +227,25 @@ function drawOverlay(quad) {
 async function processAndRender(canvas, quad, sourceLabel='') {
   statusEl.textContent = quad ? `已生成扫描件（${sourceLabel}）。` : `未检测到 A4（${sourceLabel}，已增强原图）`;
 
-  const enhancedMat = enhanceAndWarp(canvas, quad);
-  let uprightCanvas = matToCanvas(enhancedMat);
-
-  // A. 强制纵向（横拍先旋90）
-  if (uprightCanvas.width > uprightCanvas.height) {
-    uprightCanvas = rotateCanvas(uprightCanvas, 270);
-  }
-
-  // B. 0/90/180/270 综合评分选最可读
-  uprightCanvas = autoUprightByScoring(uprightCanvas);
-
-  // C. 对 0°/180°做上下密度 + 页眉/脚注特征判定（必要时 +180°）
-  uprightCanvas = autoFix180ByTopBottom(uprightCanvas);
-
-  // D. 等比缩放到 A4 纵向白底居中
-  const finalCanvas = fitToA4Portrait(uprightCanvas);
-
-  // E. 2D 稳定渲染到结果画布
-  latestResultCanvas = finalCanvas;
-  resultCanvas.width  = finalCanvas.width;
-  resultCanvas.height = finalCanvas.height;
-  const dstCtx = resultCanvas.getContext('2d');
-  dstCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
-  dstCtx.drawImage(finalCanvas, 0, 0);
-  console.log('[scanner] render result', { resultCanvasSize: [resultCanvas.width, resultCanvas.height], finalCanvasSize: [finalCanvas.width, finalCanvas.height] });
-
-  // 启用下载
-  downloadPngBtn.disabled = false;
-  downloadJpgBtn.disabled = false;
-
-  enhancedMat.delete();
+  const finalCanvas = await pipelineToFinalCanvas(canvas, quad, sourceLabel);
+  addScanResult(finalCanvas);
+  showScanByIndex(scanCanvases.length - 1);
 }
 
-// ——增强与透视（完整定义）——
+/** 统一管线到最终 A4 画布 */
+async function pipelineToFinalCanvas(inputCanvas, quad, sourceLabel='') {
+  const enhancedMat = enhanceAndWarp(inputCanvas, quad);
+  let uprightCanvas = matToCanvas(enhancedMat);
+  enhancedMat.delete();
+
+  if (uprightCanvas.width > uprightCanvas.height) uprightCanvas = rotateCanvas(uprightCanvas, 270);
+  uprightCanvas = autoUprightByScoring(uprightCanvas);
+  uprightCanvas = autoFix180ByTopBottom(uprightCanvas);
+  const finalCanvas = fitToA4Portrait(uprightCanvas);
+  return finalCanvas;
+}
+
+/** 增强与透视（完整定义） */
 function enhanceImage(mat, mode='auto') {
   let rgb = new cv.Mat(); cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
   let gray = new cv.Mat(); cv.cvtColor(rgb, gray, cv.COLOR_RGB2GRAY);
@@ -288,10 +288,8 @@ function enhanceAndWarp(canvas, quad) {
     const dstH = Math.max(Math.round(heightA), Math.round(heightB));
 
     const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      quad[0].x, quad[0].y,
-      quad[1].x, quad[1].y,
-      quad[2].x, quad[2].y,
-      quad[3].x, quad[3].y
+      quad[0].x, quad[0].y, quad[1].x, quad[1].y,
+      quad[2].x, quad[2].y, quad[3].x, quad[3].y
     ]);
     const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [ 0,0, dstW-1,0, dstW-1,dstH-1, 0,dstH-1 ]);
     const M = cv.getPerspectiveTransform(srcTri, dstTri);
@@ -306,7 +304,7 @@ function enhanceAndWarp(canvas, quad) {
   return out;
 }
 
-// ——0/90/180/270 评分（同前）——
+/** 0/90/180/270 综合评分选最可读 */
 function autoUprightByScoring(canvas) {
   const degs = [0, 90, 180, 270];
   let bestDeg = 0, bestScore = -Infinity;
@@ -341,34 +339,27 @@ function readabilityScoreCanvas(canvas) {
   return score;
 }
 
-// ——0/180 增强判定（上下密度 + 页眉脚注特征）——
+/** 0°/180°补强判定（上下黑像素密度 + 页眉脚注特征） */
 function autoFix180ByTopBottom(canvas) {
   const mat = cv.imread(canvas);
   const gray = new cv.Mat(); cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
   const bw = new cv.Mat(); cv.threshold(gray, bw, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
 
   const h = bw.rows, w = bw.cols;
-  const band = Math.max( Math.floor(h * 0.12), 40 ); // 上下带宽
+  const band = Math.max( Math.floor(h * 0.12), 40 );
   let topBlack = 0, bottomBlack = 0;
 
-  for (let r = 0; r < band; r++) {
-    for (let c = 0; c < w; c++) { if (bw.ucharPtr(r,c)[0] === 0) topBlack++; }
-  }
-  for (let r = h-band; r < h; r++) {
-    for (let c = 0; c < w; c++) { if (bw.ucharPtr(r,c)[0] === 0) bottomBlack++; }
-  }
+  for (let r = 0; r < band; r++) for (let c = 0; c < w; c++) if (bw.ucharPtr(r,c)[0] === 0) topBlack++;
+  for (let r = h-band; r < h; r++) for (let c = 0; c < w; c++) if (bw.ucharPtr(r,c)[0] === 0) bottomBlack++;
 
-  // 页眉通常较干净，脚注/签名/底部表格更密；若顶部更“脏”，可能倒置
   const ratio = topBlack / (bottomBlack + 1);
   mat.delete(); gray.delete(); bw.delete();
 
-  if (ratio > 1.25) { // 阈值可微调
-    return rotateCanvas(canvas, 180);
-  }
+  if (ratio > 1.25) return rotateCanvas(canvas, 180);
   return canvas;
 }
 
-// ——投影方差工具——
+/** 投影方差工具 */
 function projectionVars(bw) {
   const rows = bw.rows, cols = bw.cols;
   const rowSums = new Float64Array(rows), colSums = new Float64Array(cols);
@@ -421,7 +412,7 @@ function rotateCanvas(inputCanvas, deg) {
   return out;
 }
 
-/** A4候选检测（同前） */
+/** A4候选检测 */
 function detectQuad(canvas) {
   const src = cv.imread(canvas);
   try {
@@ -459,3 +450,62 @@ function orderQuad(points){
   return [tl,tr,br,bl];
 }
 function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx + dy*dy); }
+
+/** 浏览控件：添加结果、显示索引、指示器、上一张/下一张 */
+function addScanResult(finalCanvas) {
+  scanCanvases.push(finalCanvas);
+
+  // 生成缩略图
+  const thumb = document.createElement('canvas');
+  const tw = 90, th = 70;
+  thumb.width = tw; thumb.height = th;
+  const ctx = thumb.getContext('2d');
+  ctx.fillStyle = '#000'; ctx.fillRect(0,0,tw,th);
+  const scale = Math.min(tw / finalCanvas.width, th / finalCanvas.height);
+  const w = Math.round(finalCanvas.width * scale);
+  const h = Math.round(finalCanvas.height * scale);
+  const dx = Math.floor((tw - w) / 2);
+  const dy = Math.floor((th - h) / 2);
+  ctx.drawImage(finalCanvas, 0,0,finalCanvas.width,finalCanvas.height, dx,dy, w,h);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'thumb';
+  wrap.appendChild(thumb);
+  wrap.addEventListener('click', () => {
+    const idx = Array.from(document.getElementById('thumbList').children).indexOf(wrap);
+    showScanByIndex(idx);
+  });
+  document.getElementById('thumbList').appendChild(wrap);
+  updateIndicator();
+}
+
+function showScanByIndex(idx) {
+  if (idx < 0 || idx >= scanCanvases.length) return;
+  currentScanIndex = idx;
+
+  const list = document.getElementById('thumbList').children;
+  Array.from(list).forEach((el, i) => el.classList.toggle('active', i === idx));
+
+  const finalCanvas = scanCanvases[idx];
+  latestResultCanvas = finalCanvas;
+  resultCanvas.width = finalCanvas.width;
+  resultCanvas.height = finalCanvas.height;
+  resultCanvas.getContext('2d').drawImage(finalCanvas, 0, 0);
+  updateIndicator();
+}
+
+function updateIndicator() {
+  const el = document.getElementById('scanIndicator');
+  if (el) el.textContent = scanCanvases.length ? `${currentScanIndex+1} / ${scanCanvases.length}` : `0 / 0`;
+}
+
+document.getElementById('prevScan')?.addEventListener('click', () => {
+  if (!scanCanvases.length) return;
+  const next = (currentScanIndex - 1 + scanCanvases.length) % scanCanvases.length;
+  showScanByIndex(next);
+});
+document.getElementById('nextScan')?.addEventListener('click', () => {
+  if (!scanCanvases.length) return;
+  const next = (currentScanIndex + 1) % scanCanvases.length;
+  showScanByIndex(next);
+});
