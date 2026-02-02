@@ -1,7 +1,8 @@
 /**
- * Pad 文档扫描器（A4 自动识别 + 透视与角度校正 + 去杂物 + 高清增强）
- * 改进：不依赖 Tesseract，基于投影统计对 0/90/180/270 进行评分，自动选择“文字正向”；
- * 同时强制输出纵向（portrait）。
+ * Pad 文档扫描器（A4 自动识别 + 透视无失真 + 自动正向 + 等比输出为纵向A4）
+ * - 透视阶段：以检测到的四边形真实宽高做矫正（避免长短边错配导致压缩/拉伸）
+ * - 方向判断：对 0/90/180/270 进行投影方差评分，选可读性最佳方向；最后强制纵向（portrait）
+ * - 最终输出：等比缩放到 A4 纵向目标尺寸并居中（白底），不拉伸
  */
 
 const videoEl = document.getElementById('video');
@@ -239,17 +240,23 @@ function drawOverlay(quad) {
   ctx.stroke();
 }
 
-/** 主流程：透视 + 增强 + 自动选择 0/90/180/270 的“文字正向”，并强制纵向 + 渲染 */
+/** 主流程：透视 + 增强 + 自动正向 + 输出A4纵向 + 渲染 */
 async function processAndRender(canvas, quad, sourceLabel='') {
   if (!quad) statusEl.textContent = `未检测到 A4 四边形（${sourceLabel}），已增强原图。`;
   else statusEl.textContent = `已生成扫描件（${sourceLabel}）。`;
 
-  const enhancedMat = enhanceAndWarp(canvas, quad); // 透视 + 增强的 Mat
+  // 1) 透视无失真 + 增强
+  const enhancedMat = enhanceAndWarp(canvas, quad);
 
-  // 自动选择最佳方向
-  latestResultCanvas = autoChooseUpright(enhancedMat); // Canvas（自动正向 + 纵向）
+  // 2) 自动选取 0/90/180/270 的最佳阅读方向 + 强制纵向
+  const uprightCanvas = autoChooseUpright(enhancedMat);
 
-  const mat = cv.imread(latestResultCanvas);
+  // 3) 输出到 A4 纵向目标（等比缩放居中，避免压缩）
+  const finalCanvas = fitToA4Portrait(uprightCanvas);
+
+  // 渲染与缓存
+  latestResultCanvas = finalCanvas;
+  const mat = cv.imread(finalCanvas);
   cv.imshow(resultCanvas, mat);
   mat.delete();
   enhancedMat.delete();
@@ -258,40 +265,36 @@ async function processAndRender(canvas, quad, sourceLabel='') {
   downloadJpgBtn.disabled = false;
 }
 
-/** 透视矫正 + 基础增强 */
+/** 透视矫正（以实际四边形宽高为目标） + 基础增强（不强行套A4比） */
 function enhanceAndWarp(canvas, quad) {
   const src = cv.imread(canvas);
   let warped = new cv.Mat();
 
   if (quad) {
-    const size = outputSizeEl.value; // m/h/uh
-    const targetShort = size === 'm' ? 1600 : (size === 'h' ? 2400 : 3300);
-    const targetLong = Math.round(targetShort / A4_RATIO_W2H);
+    // 计算真实目标宽高（避免错认长短边造成压缩）
+    const widthA  = dist(quad[2], quad[3]); // BR-BL
+    const widthB  = dist(quad[1], quad[0]); // TR-TL
+    const heightA = dist(quad[1], quad[2]); // TR-BR
+    const heightB = dist(quad[0], quad[3]); // TL-BL
 
-    let outW = targetShort; // 短边
-    let outH = targetLong;  // 长边
-    let dstQuad = [
-      new cv.Point(0, 0),
-      new cv.Point(outW - 1, 0),
-      new cv.Point(outW - 1, outH - 1),
-      new cv.Point(0, outH - 1)
-    ];
+    const dstW = Math.max(Math.round(widthA),  Math.round(widthB));
+    const dstH = Math.max(Math.round(heightA), Math.round(heightB));
 
     const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      quad[0].x, quad[0].y,
-      quad[1].x, quad[1].y,
-      quad[2].x, quad[2].y,
-      quad[3].x, quad[3].y
+      quad[0].x, quad[0].y, // TL
+      quad[1].x, quad[1].y, // TR
+      quad[2].x, quad[2].y, // BR
+      quad[3].x, quad[3].y  // BL
     ]);
     const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      dstQuad[0].x, dstQuad[0].y,
-      dstQuad[1].x, dstQuad[1].y,
-      dstQuad[2].x, dstQuad[2].y,
-      dstQuad[3].x, dstQuad[3].y
+      0, 0,
+      dstW - 1, 0,
+      dstW - 1, dstH - 1,
+      0, dstH - 1
     ]);
 
     const M = cv.getPerspectiveTransform(srcTri, dstTri);
-    cv.warpPerspective(src, warped, M, new cv.Size(outW, outH), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
+    cv.warpPerspective(src, warped, M, new cv.Size(dstW, dstH), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
 
     srcTri.delete(); dstTri.delete(); M.delete();
   } else {
@@ -300,6 +303,7 @@ function enhanceAndWarp(canvas, quad) {
 
   // 增强
   let enhanced = enhanceImage(warped, enhanceModeEl.value);
+
   src.delete(); warped.delete();
   return enhanced; // Mat
 }
@@ -355,33 +359,24 @@ function enhanceImage(mat, mode='auto') {
 }
 
 /**
- * 自动选择正向（不依赖 OCR）：
- * - 针对 0/90/180/270 四个旋转，计算可读性评分：
- *   * 先做 OTSU 二值化
- *   * 计算行投影方差 rowVar 与列投影方差 colVar
- *   * 可读性分数 score = max(rowVar, colVar)
- * - 选择 score 最大的角度
- * - 最后强制纵向（portrait）
+ * 自动选择正向（不依赖OCR）：
+ * - 对 0/90/180/270 分别：OTSU二值 → 行/列投影方差 → score = max(rowVar, colVar)
+ * - 选 score 最大的角度
+ * - 最后强制纵向：若宽>高 → 逆时针旋转90°
  */
 function autoChooseUpright(enhancedMat) {
-  // 候选角度
   const candidates = [0, 90, 180, 270];
-  let bestDeg = 0;
-  let bestScore = -Infinity;
+  let bestDeg = 0, bestScore = -Infinity;
 
   for (const deg of candidates) {
     const rotated = rotateMat(enhancedMat, deg);
-    const scoreObj = readabilityScore(rotated);
-    const score = Math.max(scoreObj.rowVar, scoreObj.colVar);
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestDeg = deg;
-    }
+    const { rowVar, colVar } = readabilityScore(rotated);
+    const score = Math.max(rowVar, colVar);
+    if (score > bestScore) { bestScore = score; bestDeg = deg; }
     rotated.delete();
   }
 
-  // 选中角度后，生成 Canvas
+  // 应用最佳旋转
   let canvas = matToCanvas(rotateMat(enhancedMat, bestDeg));
 
   // 强制纵向（portrait）
@@ -479,6 +474,35 @@ function rotateCanvas(inputCanvas, deg) {
   ctx.translate(outW / 2, outH / 2);
   ctx.rotate(rad);
   ctx.drawImage(inputCanvas, -inputCanvas.width / 2, -inputCanvas.height / 2);
+  return out;
+}
+
+/**
+ * 将纵向的结果Canvas按A4纵向目标等比缩放，居中放置（白底），避免拉伸压缩
+ * targetShort: 1600/2400/3300（短边），targetLong=short/0.707（长边）
+ */
+function fitToA4Portrait(uprightCanvas) {
+  const size = outputSizeEl.value; // m/h/uh
+  const targetShort = size === 'm' ? 1600 : (size === 'h' ? 2400 : 3300);
+  const targetLong  = Math.round(targetShort / A4_RATIO_W2H); // ≈ short/0.707
+  const outW = targetShort, outH = targetLong;
+
+  // 计算等比缩放
+  const scale = Math.min(outW / uprightCanvas.width, outH / uprightCanvas.height);
+  const newW = Math.round(uprightCanvas.width  * scale);
+  const newH = Math.round(uprightCanvas.height * scale);
+
+  // 绘制到白底目标画布，居中
+  const out = document.createElement('canvas');
+  out.width = outW; out.height = outH;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, outW, outH);
+
+  const dx = Math.floor((outW - newW) / 2);
+  const dy = Math.floor((outH - newH) / 2);
+  ctx.drawImage(uprightCanvas, 0, 0, uprightCanvas.width, uprightCanvas.height, dx, dy, newW, newH);
+
   return out;
 }
 
