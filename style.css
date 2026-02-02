@@ -34,4 +34,4 @@ body{margin:0; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto
 .app-footer{margin-top:12px; color:var(--muted)}
 
 /* 隐藏原生 file input，保留 label 按钮 */
-#fileInput{display:none}
+#fileInput{display:inline-block}
