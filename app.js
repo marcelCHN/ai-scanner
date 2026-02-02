@@ -1,11 +1,12 @@
 /**
  * 本地化 Tesseract 配置最终版 app.js（OCR 优先 + 兜底评分 + 强制纵向 + A4 等比输出）
- * 目录要求：
+ * 目录要求（与本文件同级的 index.html 一起使用）：
  * - ./opencv.js
  * - ./tesseract/tesseract.min.js
  * - ./tesseract/tesseract.worker.min.js
+ * - ./tesseract/tesseract-core.wasm.js   ← 注意是 .wasm.js
  * - ./tesseract/tesseract-core.wasm
- * - ./tesseract/lang-data/osd.traineddata
+ * - ./tesseract/lang-data/osd.traineddata.gz ← 注意是 .gz
  */
 
 const videoEl = document.getElementById('video');
@@ -33,7 +34,11 @@ let latestResultCanvas = null;
 const A4_RATIO_W2H = 1 / Math.sqrt(2); // ≈0.707
 
 // 本地化 Tesseract 路径（必须与仓库目录一致）
-const TESSERACT_CONFIG = { workerPath: './tesseract/tesseract.worker.min.js', corePath: './tesseract/tesseract-core.wasm.js', langPath: './tesseract/lang-data' };
+const TESSERACT_CONFIG = {
+  workerPath: './tesseract/tesseract.worker.min.js',
+  corePath:   './tesseract/tesseract-core.wasm.js', // 关键：必须 .wasm.js
+  langPath:   './tesseract/lang-data'               // OSD 会请求 osd.traineddata.gz
+};
 
 // 显示脚本加载日志
 console.log('[scanner] app.js loaded');
@@ -68,7 +73,7 @@ waitCvReady().then(() => {
   statusEl.textContent = 'OpenCV 加载失败，请检查路径。';
 });
 
-// 捕获全局错误到状态栏，便于快速定位
+// 捕获全局错误到状态栏
 window.addEventListener('error', (e) => {
   console.error('[scanner] window error', e.error || e.message);
   statusEl.textContent = `脚本错误：${e.error?.message || e.message}`;
