@@ -6,10 +6,23 @@
   <title>Pad 文档扫描器（A4 自动识别与高清扫描）</title>
   <link rel="stylesheet" href="./style.css" />
 
+  <!-- 仅当服务端没有设置 CSP 响应头时，这个 meta 才生效。
+       若响应头已存在更严格的 CSP，请使用 _headers 或 vercel.json 放宽。 -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:;
+                 style-src 'self' 'unsafe-inline';
+                 img-src 'self' data: blob:;
+                 connect-src 'self' blob:;
+                 worker-src 'self' blob:;">
+
   <script>
+    // 对不使用 wasm 的构建没有副作用；若有 wasm，会从同目录加载
     window.Module = { locateFile: (path) => './' + path };
   </script>
+  <!-- 同步加载 OpenCV，避免竞态；务必在 app.js 之前 -->
   <script src="./opencv.js"></script>
+  <!-- 应用逻辑 defer，等 DOM 就绪 -->
   <script src="./app.js" defer></script>
 </head>
 <body>
