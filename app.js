@@ -1,12 +1,10 @@
 /**
- * 显式 Worker 版（OCR 优先 + 兜底评分 + 强制纵向 + A4 等比输出）
- * 目录要求（与本文件同级的 index.html 一起使用）：
- * - ./opencv.js
- * - ./tesseract/tesseract.min.js
- * - ./tesseract/tesseract.worker.min.js
- * - ./tesseract/tesseract-core.wasm.js   ← 注意是 .wasm.js
- * - ./tesseract/tesseract-core.wasm
- * - ./tesseract/lang-data/osd.traineddata.gz ← 注意是 .gz
+ * 本地算法自动正向（不依赖 Tesseract/OSD）
+ * - 透视无失真 → 增强
+ * - 强制纵向（横拍先旋90）
+ * - 0/90/180/270 综合评分选最可读
+ * - 0°/180°再做上下密度+页眉/脚注特征判定，必要时自动+180°
+ * - 2D drawImage 稳定渲染到 resultCanvas
  */
 
 const videoEl = document.getElementById('video');
@@ -33,51 +31,21 @@ let latestResultCanvas = null;
 
 const A4_RATIO_W2H = 1 / Math.sqrt(2); // ≈0.707
 
-// 计算站点基路径，例如 https://marcelchn.github.io/ai-scanner
-const BASE = (() => {
-  const u = new URL(location.href);
-  const path = u.pathname.endsWith('/') ? u.pathname : u.pathname.replace(/\/[^/]*$/, '/');
-  return `${u.origin}${path.replace(/\/$/, '')}`;
-})();
-
-// Tesseract 绝对路径配置（避免 Worker 相对路径解析失败）
-const TESSERACT_CONFIG = {
-  workerPath: `${BASE}/tesseract/tesseract.worker.min.js`,
-  corePath:   `${BASE}/tesseract/tesseract-core.wasm.js`, // 必须 .wasm.js
-  langPath:   `${BASE}/tesseract/lang-data`,              // OSD 请求 osd.traineddata.gz
-  workerBlobURL: false                                     // 禁用 Blob Worker
-};
-
-console.log('[scanner] app.js loaded, BASE=', BASE);
+console.log('[scanner] app.js loaded');
 
 function waitCvReady() {
   return new Promise((resolve, reject) => {
     if (typeof cv !== 'undefined' && cv['onRuntimeInitialized']) {
-      cv['onRuntimeInitialized'] = () => {
-        console.log('[scanner] cv.onRuntimeInitialized fired');
-        resolve();
-      };
-      setTimeout(() => {
-        if (typeof cv !== 'undefined') {
-          console.log('[scanner] cv present without onRuntimeInitialized — continue');
-          resolve();
-        }
-      }, 1500);
+      cv['onRuntimeInitialized'] = () => resolve();
+      setTimeout(() => { if (typeof cv !== 'undefined') resolve(); }, 1500);
       return;
     }
     const t0 = Date.now();
     const tick = () => {
-      if (typeof cv !== 'undefined') {
-        console.log('[scanner] cv present (late) — continue');
-        resolve();
-        return;
-      }
+      if (typeof cv !== 'undefined') { resolve(); return; }
       if (Date.now() - t0 > 15000) {
-        const msg = 'OpenCV 未就绪（可能脚本路径或缓存/CSP问题）';
-        console.error('[scanner]', msg);
-        statusEl.textContent = msg;
-        reject(new Error(msg));
-        return;
+        const msg = 'OpenCV 未就绪（检查路径/缓存/CSP）';
+        statusEl.textContent = msg; reject(new Error(msg)); return;
       }
       setTimeout(tick, 200);
     };
@@ -106,13 +74,14 @@ startBtn.addEventListener('click', async () => {
     });
     videoEl.srcObject = stream;
     await videoEl.play();
+
     overlay.width = videoEl.videoWidth;
     overlay.height = videoEl.videoHeight;
+
     statusEl.textContent = '检测中…';
     snapBtn.disabled = false;
     requestAnimationFrame(processFrame);
   } catch (e) {
-    console.error(e);
     statusEl.textContent = '无法启动相机：' + e.message;
   }
 });
@@ -128,6 +97,7 @@ fileInput.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
   statusEl.textContent = '正在读取图片…';
+
   const img = new Image();
   img.onload = async () => {
     const canvas = document.createElement('canvas');
@@ -136,37 +106,65 @@ fileInput.addEventListener('change', async (e) => {
     canvas.width = Math.round(img.width * scale);
     canvas.height = Math.round(img.height * scale);
     canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+
     const quad = detectQuad(canvas);
     await processAndRender(canvas, quad, '图片上传');
+
     overlay.width = canvas.width;
     overlay.height = canvas.height;
     overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
   };
-  img.onerror = () => { statusEl.textContent = '图片读取失败，请重试'; };
+  img.onerror = () => { statusEl.textContent = '图片读取失败，请更换文件。'; };
   img.src = URL.createObjectURL(file);
 });
 
 autoCaptureEl?.addEventListener('change', () => { a4StableCounter = 0; });
 
 downloadPngBtn.addEventListener('click', () => {
-  const url = resultCanvas.toDataURL('image/png'); downloadDataUrl(url, 'scan.png');
+  const url = resultCanvas.toDataURL('image/png');
+  downloadDataUrl(url, 'scan.png');
 });
 downloadJpgBtn.addEventListener('click', () => {
-  const url = resultCanvas.toDataURL('image/jpeg', 0.95); downloadDataUrl(url, 'scan.jpg');
+  const url = resultCanvas.toDataURL('image/jpeg', 0.95);
+  downloadDataUrl(url, 'scan.jpg');
 });
 
-rotateLeftBtn?.addEventListener('click', () => redrawRotated(270));
-rotateRightBtn?.addEventListener('click', () => redrawRotated(90));
-rotate180Btn?.addEventListener('click', () => redrawRotated(180));
-function redrawRotated(deg){ if(!latestResultCanvas) return; latestResultCanvas=rotateCanvas(latestResultCanvas,deg); const m=cv.imread(latestResultCanvas); cv.imshow(resultCanvas, m); m.delete(); }
+// 手动旋转按钮
+rotateLeftBtn?.addEventListener('click', () => {
+  if (!latestResultCanvas) return;
+  latestResultCanvas = rotateCanvas(latestResultCanvas, 270);
+  const ctx = resultCanvas.getContext('2d');
+  resultCanvas.width = latestResultCanvas.width;
+  resultCanvas.height = latestResultCanvas.height;
+  ctx.drawImage(latestResultCanvas, 0, 0);
+});
+rotateRightBtn?.addEventListener('click', () => {
+  if (!latestResultCanvas) return;
+  latestResultCanvas = rotateCanvas(latestResultCanvas, 90);
+  const ctx = resultCanvas.getContext('2d');
+  resultCanvas.width = latestResultCanvas.width;
+  resultCanvas.height = latestResultCanvas.height;
+  ctx.drawImage(latestResultCanvas, 0, 0);
+});
+rotate180Btn?.addEventListener('click', () => {
+  if (!latestResultCanvas) return;
+  latestResultCanvas = rotateCanvas(latestResultCanvas, 180);
+  const ctx = resultCanvas.getContext('2d');
+  resultCanvas.width = latestResultCanvas.width;
+  resultCanvas.height = latestResultCanvas.height;
+  ctx.drawImage(latestResultCanvas, 0, 0);
+});
 
 function downloadDataUrl(url, filename) {
-  const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
 
 function captureFrame() {
   const w = videoEl.videoWidth, h = videoEl.videoHeight;
-  const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
   canvas.getContext('2d').drawImage(videoEl, 0, 0, w, h);
   return canvas;
 }
@@ -175,16 +173,18 @@ function processFrame() {
   if (!stream) return;
   if (processing) { requestAnimationFrame(processFrame); return; }
   processing = true;
+
   const frameCanvas = captureFrame();
   const quad = detectQuad(frameCanvas);
   drawOverlay(quad);
 
   if (quad) {
     lastQuad = quad;
-    statusEl.textContent = '已检测到疑似 A4（稳定度 ' + a4StableCounter + '/10）';
+    statusEl.textContent = `已检测到疑似 A4（稳定度 ${a4StableCounter}/10）`;
     a4StableCounter = Math.min(a4StableCounter + 1, 10);
-    if (autoCaptureEl?.checked && a4StableCounter >= 8) {
-      processAndRender(frameCanvas, quad, '自动抓拍'); a4StableCounter = 0;
+    if (autoCaptureEl.checked && a4StableCounter >= 8) {
+      processAndRender(frameCanvas, quad, '自动抓拍');
+      a4StableCounter = 0;
     }
   } else {
     statusEl.textContent = '检测中…请将 A4 放置于画面中央';
@@ -201,30 +201,42 @@ function drawOverlay(quad) {
   ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 1;
   ctx.strokeRect(10, 10, overlay.width - 20, overlay.height - 20);
   if (!quad) return;
-  ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 3; ctx.beginPath();
-  ctx.moveTo(quad[0].x, quad[0].y); for (let i = 1; i < quad.length; i++) ctx.lineTo(quad[i].x, quad[i].y);
+  ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(quad[0].x, quad[0].y);
+  for (let i = 1; i < quad.length; i++) ctx.lineTo(quad[i].x, quad[i].y);
   ctx.closePath(); ctx.stroke();
 }
 
-/** 主流程：透视 + 增强 + OCR优先正向（显式 Worker） + A4纵向输出 */
+/** 主流程：透视 + 增强 + 本地算法自动正向 + A4纵向输出 + 稳定渲染 */
 async function processAndRender(canvas, quad, sourceLabel='') {
-  if (!quad) statusEl.textContent = `未检测到 A4 四边形（${sourceLabel}），已增强原图。`;
-  else statusEl.textContent = `已生成扫描件（${sourceLabel}）。`;
+  statusEl.textContent = quad ? `已生成扫描件（${sourceLabel}）。` : `未检测到 A4（${sourceLabel}，已增强原图）`;
 
   const enhancedMat = enhanceAndWarp(canvas, quad);
-  const uprightCanvas = await ensureUprightByOSD(enhancedMat); // 先试 OSD
-  const finalCanvas    = fitToA4Portrait(uprightCanvas);
+  let uprightCanvas = matToCanvas(enhancedMat);
 
-  // 使用 2D 直接绘制结果，避免某些环境下 cv.imshow 失效
+  // A. 强制纵向（横拍先旋90）
+  if (uprightCanvas.width > uprightCanvas.height) {
+    uprightCanvas = rotateCanvas(uprightCanvas, 270);
+  }
+
+  // B. 0/90/180/270 综合评分选最可读
+  uprightCanvas = autoUprightByScoring(uprightCanvas);
+
+  // C. 对 0°/180°做上下密度 + 页眉/脚注特征判定（必要时 +180°）
+  uprightCanvas = autoFix180ByTopBottom(uprightCanvas);
+
+  // D. 等比缩放到 A4 纵向白底居中
+  const finalCanvas = fitToA4Portrait(uprightCanvas);
+
+  // E. 2D 稳定渲染到结果画布
   latestResultCanvas = finalCanvas;
   resultCanvas.width  = finalCanvas.width;
   resultCanvas.height = finalCanvas.height;
   const dstCtx = resultCanvas.getContext('2d');
   dstCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
   dstCtx.drawImage(finalCanvas, 0, 0);
-  console.log('[scanner] render result',
-    { resultCanvasSize: [resultCanvas.width, resultCanvas.height],
-      finalCanvasSize:  [finalCanvas.width, finalCanvas.height] });
+  console.log('[scanner] render result', { resultCanvasSize: [resultCanvas.width, resultCanvas.height], finalCanvasSize: [finalCanvas.width, finalCanvas.height] });
 
   // 启用下载
   downloadPngBtn.disabled = false;
@@ -233,62 +245,12 @@ async function processAndRender(canvas, quad, sourceLabel='') {
   enhancedMat.delete();
 }
 
-/** 显式 Worker：OSD 文字方向识别 */
-async function ensureUprightByOSD(enhancedMat) {
-  const canvas = matToCanvas(enhancedMat);
-  try {
-    if (typeof Tesseract === 'undefined') {
-      statusEl.textContent = 'Tesseract 未定义（OSD不可用，采用兜底评分）';
-      return autoChooseUprightByScoring(enhancedMat);
-    }
-    const worker = await Tesseract.createWorker({
-      ...TESSERACT_CONFIG,
-      logger: m => console.log('[tesseract]', m)
-    });
-    await worker.load();
-    await worker.loadLanguage('osd');
-    await worker.initialize('osd');
-    const res = await worker.detect(canvas);
-    await worker.terminate();
-
-    const data = res.data || res;
-    const rawDeg = (data.orientation && data.orientation.degrees) || data.degrees;
-    const conf   = (data.orientation && data.orientation.confidence) || data.confidence || 0;
-
-    if (typeof rawDeg !== 'number') {
-      statusEl.textContent = 'OSD 返回无角度（rawDeg 非数字，采用兜底评分）';
-      return autoChooseUprightByScoring(enhancedMat);
-    }
-    const deg = normalizeDeg(rawDeg);
-    statusEl.textContent = `OSD: raw=${rawDeg}°, norm=${deg}°, conf=${conf.toFixed(2)} → 采用OSD旋转 ${deg}°`;
-
-    if (conf < 1.0) {
-      statusEl.textContent += '（置信度低，改用兜底评分）';
-      return autoChooseUprightByScoring(enhancedMat);
-    }
-
-    let c = rotateCanvas(canvas, deg);
-    if (c.width > c.height) c = rotateCanvas(c, 270); // 强制纵向
-    return c;
-  } catch (e) {
-    console.warn('[scanner] OSD 失败：', e);
-    statusEl.text内容 = `OSD 检测失败：${e && e.message ? e.message : String(e)}（采用兜底评分）`;
-    let c = autoChooseUprightByScoring(enhancedMat);
-    if (c.width > c.height) c = rotateCanvas(c, 270);
-    return c;
-  }
-}
-
-function normalizeDeg(d){ const k=((d%360)+360)%360; if(k>=315||k<45) return 0; if(k<135) return 90; if(k<225) return 180; return 270; }
-
-/** 增强（光照均衡 + 阈值 + 去噪 或 彩色增强） */
+// ——增强与透视（完整定义）——
 function enhanceImage(mat, mode='auto') {
   let rgb = new cv.Mat(); cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
   let gray = new cv.Mat(); cv.cvtColor(rgb, gray, cv.COLOR_RGB2GRAY);
-
   let bg = new cv.Mat();   cv.GaussianBlur(gray, bg, new cv.Size(0, 0), 35);
   let norm = new cv.Mat(); cv.subtract(gray, bg, norm); cv.normalize(norm, norm, 0, 255, cv.NORM_MINMAX);
-
   let bw = new cv.Mat();   cv.adaptiveThreshold(norm, bw, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 31, 10);
   let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2,2));
   cv.morphologyEx(bw, bw, cv.MORPH_OPEN, kernel);
@@ -305,28 +267,23 @@ function enhanceImage(mat, mode='auto') {
   } else {
     const mean = new cv.Mat(), stddev = new cv.Mat(); cv.meanStdDev(norm, mean, stddev);
     const contrast = stddev.doubleAt(0,0);
-    if (contrast > 30) {
-      out = bw.clone();
-    } else {
-      out = new cv.Mat(); cv.cvtColor(rgb, out, cv.COLOR_RGB2RGBA);
-    }
+    if (contrast > 30) out = bw.clone();
+    else { out = new cv.Mat(); cv.cvtColor(rgb, out, cv.COLOR_RGB2RGBA); }
     mean.delete(); stddev.delete();
   }
-
   rgb.delete(); gray.delete(); bg.delete(); norm.delete(); kernel.delete();
   return out;
 }
 
-/** 透视矫正（以检测到的四边形真实宽高为目标） + 调用增强 */
 function enhanceAndWarp(canvas, quad) {
   const src = cv.imread(canvas);
   let warped = new cv.Mat();
 
   if (quad) {
-    const widthA  = dist(quad[2], quad[3]);  // BR-BL
-    const widthB  = dist(quad[1], quad[0]);  // TR-TL
-    const heightA = dist(quad[1], quad[2]);  // TR-BR
-    const heightB = dist(quad[0], quad[3]);  // TL-BL
+    const widthA  = dist(quad[2], quad[3]);
+    const widthB  = dist(quad[1], quad[0]);
+    const heightA = dist(quad[1], quad[2]);
+    const heightB = dist(quad[0], quad[3]);
     const dstW = Math.max(Math.round(widthA),  Math.round(widthB));
     const dstH = Math.max(Math.round(heightA), Math.round(heightB));
 
@@ -336,13 +293,9 @@ function enhanceAndWarp(canvas, quad) {
       quad[2].x, quad[2].y,
       quad[3].x, quad[3].y
     ]);
-    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      0, 0, dstW - 1, 0, dstW - 1, dstH - 1, 0, dstH - 1
-    ]);
-
+    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [ 0,0, dstW-1,0, dstW-1,dstH-1, 0,dstH-1 ]);
     const M = cv.getPerspectiveTransform(srcTri, dstTri);
     cv.warpPerspective(src, warped, M, new cv.Size(dstW, dstH), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
-
     srcTri.delete(); dstTri.delete(); M.delete();
   } else {
     warped = src.clone();
@@ -350,54 +303,72 @@ function enhanceAndWarp(canvas, quad) {
 
   const out = enhanceImage(warped, (typeof enhanceModeEl !== 'undefined' ? enhanceModeEl.value : 'auto'));
   src.delete(); warped.delete();
-  return out; // Mat
+  return out;
 }
 
-/** 兜底综合评分（不依赖 OCR） */
-function autoChooseUprightByScoring(enhancedMat) {
-  const candidates = [0, 90, 180, 270];
+// ——0/90/180/270 评分（同前）——
+function autoUprightByScoring(canvas) {
+  const degs = [0, 90, 180, 270];
   let bestDeg = 0, bestScore = -Infinity;
-  const w1 = 1.0, w2 = 0.6, w3 = 0.8;
-
-  for (const deg of candidates) {
-    const rotated = rotateMat(enhancedMat, deg);
-    const gray = new cv.Mat(); cv.cvtColor(rotated, gray, cv.COLOR_RGBA2GRAY);
-    const bw   = new cv.Mat(); cv.threshold(gray, bw, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
-
-    const { rowVar, colVar } = projectionVars(bw);
-    const projScore = Math.max(rowVar, colVar);
-
-    const horizK = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(Math.max(15, Math.floor(bw.cols/80)), 1));
-    const vertK  = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(1, Math.max(15, Math.floor(bw.rows/80))));
-    const hc = new cv.Mat(); const vc = new cv.Mat();
-    cv.morphologyEx(bw, hc, cv.MORPH_CLOSE, horizK);
-    cv.morphologyEx(bw, vc, cv.MORPH_CLOSE, vertK);
-    const horizResp = blackGain(hc, bw); const vertResp = blackGain(vc, bw);
-    horizK.delete(); vertK.delete(); hc.delete(); vc.delete();
-
-    const edges = new cv.Mat(); cv.Canny(bw, edges, 60, 180);
-    const lines = new cv.Mat(); cv.HoughLinesP(edges, lines, 1, Math.PI/180, 80, Math.max(30, Math.floor(bw.cols/50)), 10);
-    let houghHoriz = 0;
-    for (let i = 0; i < lines.rows; i++) {
-      const ptr = lines.intPtr(i,0);
-      const x1 = ptr[0], y1 = ptr[1], x2 = ptr[2], y2 = ptr[3];
-      const dx = x2 - x1, dy = y2 - y1;
-      const angle = Math.abs(Math.atan2(dy, dx)) * 180 / Math.PI;
-      if (angle < 10 || Math.abs(angle-180) < 10) houghHoriz += Math.hypot(dx, dy);
-    }
-    edges.delete(); lines.delete();
-
-    const score = w1*projScore + w2*(horizResp - vertResp) + w3*houghHoriz;
+  degs.forEach(deg => {
+    const c = rotateCanvas(canvas, deg);
+    const score = readabilityScoreCanvas(c);
     if (score > bestScore) { bestScore = score; bestDeg = deg; }
+  });
+  return rotateCanvas(canvas, bestDeg);
+}
 
-    rotated.delete(); gray.delete(); bw.delete();
+function readabilityScoreCanvas(canvas) {
+  const mat = cv.imread(canvas);
+  const gray = new cv.Mat(); cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+  const bw = new cv.Mat(); cv.threshold(gray, bw, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+
+  const { rowVar, colVar } = projectionVars(bw);
+  let score = Math.max(rowVar, colVar);
+
+  const edges = new cv.Mat(); cv.Canny(bw, edges, 60, 180);
+  const lines = new cv.Mat(); cv.HoughLinesP(edges, lines, 1, Math.PI/180, 80, Math.max(30, Math.floor(bw.cols/50)), 10);
+  let houghHoriz = 0;
+  for (let i = 0; i < lines.rows; i++) {
+    const p = lines.intPtr(i,0);
+    const dx = p[2]-p[0], dy = p[3]-p[1];
+    const angle = Math.abs(Math.atan2(dy, dx)) * 180 / Math.PI;
+    if (angle < 10 || Math.abs(angle-180) < 10) houghHoriz += Math.hypot(dx, dy);
+  }
+  score += 0.8 * houghHoriz;
+
+  mat.delete(); gray.delete(); bw.delete(); edges.delete(); lines.delete();
+  return score;
+}
+
+// ——0/180 增强判定（上下密度 + 页眉脚注特征）——
+function autoFix180ByTopBottom(canvas) {
+  const mat = cv.imread(canvas);
+  const gray = new cv.Mat(); cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+  const bw = new cv.Mat(); cv.threshold(gray, bw, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+
+  const h = bw.rows, w = bw.cols;
+  const band = Math.max( Math.floor(h * 0.12), 40 ); // 上下带宽
+  let topBlack = 0, bottomBlack = 0;
+
+  for (let r = 0; r < band; r++) {
+    for (let c = 0; c < w; c++) { if (bw.ucharPtr(r,c)[0] === 0) topBlack++; }
+  }
+  for (let r = h-band; r < h; r++) {
+    for (let c = 0; c < w; c++) { if (bw.ucharPtr(r,c)[0] === 0) bottomBlack++; }
   }
 
-  const c = matToCanvas(rotateMat(enhancedMat, bestDeg));
-  return c;
+  // 页眉通常较干净，脚注/签名/底部表格更密；若顶部更“脏”，可能倒置
+  const ratio = topBlack / (bottomBlack + 1);
+  mat.delete(); gray.delete(); bw.delete();
+
+  if (ratio > 1.25) { // 阈值可微调
+    return rotateCanvas(canvas, 180);
+  }
+  return canvas;
 }
 
-/** 计算投影方差 / 形态辅助评分 */
+// ——投影方差工具——
 function projectionVars(bw) {
   const rows = bw.rows, cols = bw.cols;
   const rowSums = new Float64Array(rows), colSums = new Float64Array(cols);
@@ -405,21 +376,13 @@ function projectionVars(bw) {
   for (let c = 0; c < cols; c++) { let s=0; for (let r = 0; r < rows; r++) if (bw.ucharPtr(r,c)[0]===0) s++; colSums[c]=s; }
   return { rowVar: variance(rowSums), colVar: variance(colSums) };
 }
-function blackGain(closed, orig) {
-  let gain = 0, base = 0;
-  for (let r=0; r<orig.rows; r++) for (let c=0; c<orig.cols; c++) {
-    const o = orig.ucharPtr(r,c)[0], k = closed.ucharPtr(r,c)[0];
-    if (o===0) base++; if (o===255 && k===0) gain++;
-  }
-  return base>0 ? gain/base : gain;
-}
 function variance(arr) {
   let n = arr.length; if (n===0) return 0;
   let mean=0; for (let i=0;i<n;i++) mean+=arr[i]; mean/=n;
   let v=0; for (let i=0;i<n;i++){const d=arr[i]-mean; v+=d*d;} return v/n;
 }
 
-/** 最终等比缩放为 A4 纵向，白底居中 */
+/** A4 等比输出（白底居中） */
 function fitToA4Portrait(uprightCanvas) {
   const size = outputSizeEl.value;
   const targetShort = size === 'm' ? 1600 : (size === 'h' ? 2400 : 3300);
@@ -458,7 +421,7 @@ function rotateCanvas(inputCanvas, deg) {
   return out;
 }
 
-/** A4候选检测 */
+/** A4候选检测（同前） */
 function detectQuad(canvas) {
   const src = cv.imread(canvas);
   try {
