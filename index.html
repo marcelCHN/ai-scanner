@@ -6,30 +6,29 @@
   <title>Pad 文档扫描器（A4 自动识别与高清扫描）</title>
   <link rel="stylesheet" href="./style.css" />
 
-  <!-- 仅当服务端没有设置更严格的 CSP 响应头时，这个 meta 才生效。
-       若你的托管（如公司网关）已通过响应头设置了 CSP，请用 _headers/vercel.json 改响应头。 -->
+  <!-- 可选：仅在服务器未设置响应头 CSP 时生效，放宽本地 wasm/eval 以支持 Tesseract/OpenCV -->
   <meta http-equiv="Content-Security-Policy"
         content="
           default-src 'self';
-          script-src 'self' https://unpkg.com 'unsafe-eval' 'wasm-unsafe-eval' blob: data:;
+          script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:;
           style-src 'self' 'unsafe-inline';
           img-src 'self' data: blob:;
-          connect-src 'self' https://unpkg.com blob:;
+          connect-src 'self' blob:;
           worker-src 'self' blob:;
         ">
 
   <script>
-    /* 对不使用 wasm 的 OpenCV 构建无副作用；若有 wasm，会从同目录加载 */
+    // OpenCV wasm 定位（若你的 opencv.js 需要），这里保留，不影响无 wasm 构建
     window.Module = { locateFile: (path) => './' + path };
   </script>
 
   <!-- 本地 OpenCV.js：必须在 app.js 之前且不要 async，避免初始化竞态 -->
   <script src="./opencv.js"></script>
 
-  <!-- 方案1：通过 CDN 加载 Tesseract.js（用于文字方向校正 OSD） -->
-  <script src="https://unpkg.com/tesseract.js@v4.0.2/dist/tesseract.min.js"></script>
+  <!-- 本地 Tesseract.js（不依赖 CDN） -->
+  <script src="./tesseract/tesseract.min.js"></script>
 
-  <!-- 应用逻辑：defer 等待 DOM 就绪 -->
+  <!-- 应用逻辑 -->
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -50,7 +49,6 @@
         <button id="startBtn">启动相机</button>
         <button id="snapBtn" disabled>手动拍摄</button>
 
-        <!-- 上传图片 -->
         <label class="upload">
           <input type="file" id="fileInput" accept="image/*" />
           <span class="upload-btn">上传图片生成扫描件</span>
@@ -59,11 +57,6 @@
         <label class="toggle">
           <input type="checkbox" id="autoCapture" checked />
           <span>自动抓拍（检测到稳定 A4）</span>
-        </label>
-
-        <label class="toggle">
-          <input type="checkbox" id="textOrientationFix" checked />
-          <span>文字方向校正</span>
         </label>
 
         <div class="options">
@@ -85,7 +78,6 @@
           </label>
         </div>
 
-        <!-- 手动旋转（兜底控制） -->
         <div class="options">
           <button id="rotateLeftBtn">左转90°</button>
           <button id="rotateRightBtn">右转90°</button>
@@ -116,7 +108,7 @@
   </main>
 
   <footer>
-    <small>© 2026 文档扫描演示 · 基于 OpenCV.js & Tesseract.js</small>
+    <small>© 2026 文档扫描演示 · 基于 OpenCV.js & Tesseract.js（本地化）</small>
   </footer>
 </body>
 </html>
