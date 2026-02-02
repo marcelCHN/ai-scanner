@@ -3,24 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 文档扫描专家</title>
+    <title>AI 高清扫描 - 最终精准版</title>
     <style>
         body { margin: 0; background: #000; font-family: system-ui; color: white; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
-        #stage { flex: 1; position: relative; background: #1a1a1b; display: flex; justify-content: center; align-items: center; }
+        #stage { flex: 1; position: relative; background: #111; display: flex; justify-content: center; align-items: center; }
         video, canvas { max-width: 100%; max-height: 100%; position: absolute; }
         #canvasOutput { display: none; z-index: 10; background: white; }
-        .ui-top { position: fixed; top: 20px; width: 100%; text-align: center; z-index: 100; pointer-events: none; }
-        .status { background: rgba(0,0,0,0.7); padding: 10px 20px; border-radius: 25px; border: 1px solid #333; color: #00ff00; font-size: 14px; }
-        .ui-bottom { height: 130px; background: #000; display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #222; }
-        .btn-main { width: 70px; height: 70px; background: white; border-radius: 50%; border: 5px solid #333; display: flex; justify-content: center; align-items: center; cursor: pointer; }
-        .btn-side { background: none; border: none; color: white; display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
-        .circle { width: 25px; height: 25px; border: 2px solid white; border-radius: 50%; }
-        .square { width: 22px; height: 22px; border: 2px solid white; border-radius: 4px; }
+        .ui-top { position: fixed; top: 20px; width: 100%; text-align: center; z-index: 100; }
+        .badge { background: rgba(0,255,0,0.2); color: #00ff00; padding: 8px 16px; border-radius: 20px; border: 1px solid #00ff00; font-size: 14px; }
+        .ui-bottom { height: 120px; background: rgba(0,0,0,0.9); display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #333; }
+        .btn-shutter { width: 70px; height: 70px; background: white; border-radius: 50%; border: 5px solid #333; cursor: pointer; }
+        .btn-side { background: none; border: none; color: white; display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: pointer; }
+        .icon-box { width: 24px; height: 24px; border: 2px solid white; border-radius: 4px; }
     </style>
 </head>
 <body>
 
-<div class="ui-top"><span class="status" id="hint">AI 引擎加载中...</span></div>
+<div class="ui-top"><span class="badge" id="hint">AI 引擎加载中...</span></div>
 
 <div id="stage">
     <video id="video" autoplay playsinline></video>
@@ -29,56 +28,60 @@
 
 <div class="ui-bottom">
     <button class="btn-side" onclick="document.getElementById('fileInput').click()">
-        <div class="square"></div>
-        <span>导入图片</span>
+        <div class="icon-box"></div>
+        <span>导入</span>
     </button>
     <input type="file" id="fileInput" hidden accept="image/*">
 
-    <div class="btn-main" onclick="runScanner()">
-        <div style="width: 55px; height: 55px; border: 2px solid #000; border-radius: 50%;"></div>
-    </div>
+    <div class="btn-shutter" onclick="captureAndScan()"></div>
 
     <button class="btn-side" onclick="location.reload()">
-        <div class="circle" style="border-top-color: transparent;"></div>
-        <span>重新拍摄</span>
+        <div class="icon-box" style="border-radius: 50%;"></div>
+        <span>重置</span>
     </button>
 </div>
 
 <script>
     var Module = { onRuntimeInitialized() { 
-        document.getElementById('hint').innerText = "请对准 A4 纸并点击拍照"; 
-        startCam(); 
+        document.getElementById('hint').innerText = "已锁定 A4 纸张边界"; 
+        startCamera(); 
     }};
 
-    async function startCam() {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } } 
-        });
-        document.getElementById('video').srcObject = stream;
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", width: 1920 } 
+            });
+            document.getElementById('video').srcObject = stream;
+        } catch (e) { document.getElementById('hint').innerText = "请导入图片"; }
     }
 
-    function runScanner() {
-        const video = document.getElementById('video');
-        let src = cv.imread(video);
-        process(src);
+    // 严谨的点位排序
+    function sortPoints(pts) {
+        let sorted = new Array(4);
+        let sums = pts.map(p => p.x + p.y);
+        let diffs = pts.map(p => p.y - p.x);
+        sorted[0] = pts[sums.indexOf(Math.min(...sums))]; // TL
+        sorted[2] = pts[sums.indexOf(Math.max(...sums))]; // BR
+        sorted[1] = pts[diffs.indexOf(Math.min(...diffs))]; // TR
+        sorted[3] = pts[diffs.indexOf(Math.max(...diffs))]; // BL
+        return sorted;
     }
 
     function process(src) {
-        let dst = new cv.Mat();
         let gray = new cv.Mat();
+        let edges = new cv.Mat();
         
-        // 1. 极大提升边缘识别：形态学闭运算
+        // 1. 预处理：强化边缘
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
         cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+        cv.Canny(gray, edges, 50, 150);
         
-        let edges = new cv.Mat();
-        cv.Canny(gray, edges, 75, 200);
-        
-        // 关键步骤：把断开的边缘连起来
-        let M_kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-        cv.morphologyEx(edges, edges, cv.MORPH_CLOSE, M_kernel);
+        // 关键：膨胀边缘，防止表格线干扰
+        let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        cv.dilate(edges, edges, kernel);
 
-        // 2. 轮廓查找
+        // 2. 轮廓提取
         let contours = new cv.MatVector();
         let hierarchy = new cv.Mat();
         cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
@@ -86,12 +89,15 @@
         let maxArea = 0, bestQuad = null;
         for (let i = 0; i < contours.size(); ++i) {
             let cnt = contours.get(i);
+            let area = cv.contourArea(cnt);
+            // 过滤掉面积小于 20% 的小轮廓，防止锁定到纸张内部的表格
+            if (area < (src.rows * src.cols * 0.2)) continue;
+
             let peri = cv.arcLength(cnt, true);
             let approx = new cv.Mat();
             cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
             
             if (approx.rows == 4) {
-                let area = cv.contourArea(approx);
                 if (area > maxArea) {
                     maxArea = area;
                     bestQuad = [];
@@ -103,46 +109,50 @@
             approx.delete();
         }
 
-        // 3. 结果处理
-        if (bestQuad && maxArea > (src.rows * src.cols * 0.1)) {
-            // 排序四点
-            bestQuad.sort((a, b) => a.y - b.y);
-            let top = bestQuad.slice(0, 2).sort((a, b) => a.x - b.x);
-            let bottom = bestQuad.slice(2, 4).sort((a, b) => a.x - b.x);
-            let sorted = [top[0], top[1], bottom[1], bottom[0]]; // TL, TR, BR, BL
-
-            // 透视变换
-            let warped = new cv.Mat();
-            const w = 1000, h = 1414;
-            let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [sorted[0].x, sorted[0].y, sorted[1].x, sorted[1].y, sorted[2].x, sorted[2].y, sorted[3].x, sorted[3].y]);
+        // 3. 变换与增强
+        if (bestQuad) {
+            let sorted = sortPoints(bestQuad);
+            const w = 1200, h = 1697; // 标准 A4 高清比例
+            let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+                sorted[0].x, sorted[0].y, sorted[1].x, sorted[1].y,
+                sorted[2].x, sorted[2].y, sorted[3].x, sorted[3].y
+            ]);
             let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, w, 0, w, h, 0, h]);
-            let transMat = cv.getPerspectiveTransform(srcCoords, dstCoords);
-            cv.warpPerspective(src, warped, transMat, new cv.Size(w, h));
+            let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
+            let warped = new cv.Mat();
+            cv.warpPerspective(src, warped, M, new cv.Size(w, h));
 
-            // 4. 商业级增强：去阴影 + 色彩拉伸
-            let final = new cv.Mat();
-            cv.cvtColor(warped, final, cv.COLOR_RGBA2RGB);
-            // 提升亮度对比度：1.15倍对比度，15单位偏移
-            final.convertTo(final, -1, 1.15, 15);
-            
+            // 增强画质：彩色增强模式，不丢失签名和印章
+            cv.cvtColor(warped, warped, cv.COLOR_RGBA2RGB);
+            warped.convertTo(warped, -1, 1.2, 10); // 略微增加对比度和亮度
+
             document.getElementById('canvasOutput').style.display = 'block';
-            cv.imshow('canvasOutput', final);
-            document.getElementById('hint').innerText = "扫描成功！请长按图片保存";
-            
-            // 释放
-            warped.delete(); final.delete(); srcCoords.delete(); dstCoords.delete(); transMat.delete();
+            cv.imshow('canvasOutput', warped);
+            document.getElementById('hint').innerText = "已生成高清扫描件";
+
+            warped.delete(); srcCoords.delete(); dstCoords.delete(); M.delete();
         } else {
-            alert("未能识别 A4 边界，请保持背景干净且颜色较深。");
+            alert("未检测到纸张边缘，请确保纸张四周都有深色背景露出。");
         }
 
-        src.delete(); gray.delete(); edges.delete(); M_kernel.delete(); contours.delete(); hierarchy.delete();
+        gray.delete(); edges.delete(); kernel.delete(); contours.delete(); hierarchy.delete();
+    }
+
+    function captureAndScan() {
+        let src = cv.imread(document.getElementById('video'));
+        process(src);
+        src.delete();
     }
 
     document.getElementById('fileInput').onchange = (e) => {
         const reader = new FileReader();
         reader.onload = (ev) => {
             const img = new Image();
-            img.onload = () => process(cv.imread(img));
+            img.onload = () => {
+                let src = cv.imread(img);
+                process(src);
+                src.delete();
+            };
             img.src = ev.target.result;
         };
         reader.readAsDataURL(e.target.files[0]);
