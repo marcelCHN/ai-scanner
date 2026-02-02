@@ -1,163 +1,80 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 高清扫描 - 最终精准版</title>
-    <style>
-        body { margin: 0; background: #000; font-family: system-ui; color: white; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
-        #stage { flex: 1; position: relative; background: #111; display: flex; justify-content: center; align-items: center; }
-        video, canvas { max-width: 100%; max-height: 100%; position: absolute; }
-        #canvasOutput { display: none; z-index: 10; background: white; }
-        .ui-top { position: fixed; top: 20px; width: 100%; text-align: center; z-index: 100; }
-        .badge { background: rgba(0,255,0,0.2); color: #00ff00; padding: 8px 16px; border-radius: 20px; border: 1px solid #00ff00; font-size: 14px; }
-        .ui-bottom { height: 120px; background: rgba(0,0,0,0.9); display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #333; }
-        .btn-shutter { width: 70px; height: 70px; background: white; border-radius: 50%; border: 5px solid #333; cursor: pointer; }
-        .btn-side { background: none; border: none; color: white; display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: pointer; }
-        .icon-box { width: 24px; height: 24px; border: 2px solid white; border-radius: 4px; }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pad 文档扫描器（A4 自动识别与高清扫描）</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- OpenCV.js CDN（需联网运行） -->
+  <script>window.Module = { locateFile: (path) => './' + path };</script>
+  <script async src="./opencv.js" onload="console.log('OpenCV.js loaded')" onerror="console.error('Failed to load local OpenCV.js')"></script>
 </head>
 <body>
+  <header>
+    <h1>Pad 文档扫描器</h1>
+    <p>自动识别倾斜 A4、精准定位并生成高清扫描件</p>
+  </header>
 
-<div class="ui-top"><span class="badge" id="hint">AI 引擎加载中...</span></div>
+  <main>
+    <section class="camera-section">
+      <div class="video-wrapper">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="overlay" class="overlay"></canvas>
+        <div id="status" class="status">初始化中…</div>
+      </div>
+      <div class="controls">
+        <button id="startBtn">启动相机</button>
+        <button id="snapBtn" disabled>手动拍摄</button>
+        <label class="toggle">
+          <input type="checkbox" id="autoCapture" checked />
+          <span>自动抓拍（检测到稳定 A4）</span>
+        </label>
+        <div class="options">
+          <label>
+            增强模式：
+            <select id="enhanceMode">
+              <option value="auto" selected>自动（推荐）</option>
+              <option value="binarize">纯黑白（阈值）</option>
+              <option value="color">保留彩色</option>
+            </select>
+          </label>
+          <label>
+            输出分辨率：
+            <select id="outputSize">
+              <option value="m">中（约 1600×2300）</option>
+              <option value="h" selected>高（约 2400×3400）</option>
+              <option value="uh">超高（约 3300×4700）</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    </section>
 
-<div id="stage">
-    <video id="video" autoplay playsinline></video>
-    <canvas id="canvasOutput"></canvas>
-</div>
+    <section class="result-section">
+      <h2>扫描结果</h2>
+      <div class="result-wrapper">
+        <canvas id="resultCanvas"></canvas>
+      </div>
+      <div class="result-actions">
+        <button id="downloadPng" disabled>下载 PNG</button>
+        <button id="downloadJpg" disabled>下载 JPG</button>
+      </div>
+    </section>
 
-<div class="ui-bottom">
-    <button class="btn-side" onclick="document.getElementById('fileInput').click()">
-        <div class="icon-box"></div>
-        <span>导入</span>
-    </button>
-    <input type="file" id="fileInput" hidden accept="image/*">
+    <section class="tips">
+      <h2>使用提示</h2>
+      <ul>
+        <li>将 A4 纸置于纯色背景，避免与背景同色以提升识别稳定性。</li>
+        <li>保持充足光照，避免强反光；系统会自动做光照均衡处理。</li>
+        <li>检测到稳定的四边形且与 A4 比例匹配时，会自动抓拍并生成正向高清扫描件。</li>
+      </ul>
+    </section>
+  </main>
 
-    <div class="btn-shutter" onclick="captureAndScan()"></div>
+  <footer>
+    <small>© 2026 文档扫描演示 · 基于 OpenCV.js</small>
+  </footer>
 
-    <button class="btn-side" onclick="location.reload()">
-        <div class="icon-box" style="border-radius: 50%;"></div>
-        <span>重置</span>
-    </button>
-</div>
-
-<script>
-    var Module = { onRuntimeInitialized() { 
-        document.getElementById('hint').innerText = "已锁定 A4 纸张边界"; 
-        startCamera(); 
-    }};
-
-    async function startCamera() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: "environment", width: 1920 } 
-            });
-            document.getElementById('video').srcObject = stream;
-        } catch (e) { document.getElementById('hint').innerText = "请导入图片"; }
-    }
-
-    // 严谨的点位排序
-    function sortPoints(pts) {
-        let sorted = new Array(4);
-        let sums = pts.map(p => p.x + p.y);
-        let diffs = pts.map(p => p.y - p.x);
-        sorted[0] = pts[sums.indexOf(Math.min(...sums))]; // TL
-        sorted[2] = pts[sums.indexOf(Math.max(...sums))]; // BR
-        sorted[1] = pts[diffs.indexOf(Math.min(...diffs))]; // TR
-        sorted[3] = pts[diffs.indexOf(Math.max(...diffs))]; // BL
-        return sorted;
-    }
-
-    function process(src) {
-        let gray = new cv.Mat();
-        let edges = new cv.Mat();
-        
-        // 1. 预处理：强化边缘
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-        cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-        cv.Canny(gray, edges, 50, 150);
-        
-        // 关键：膨胀边缘，防止表格线干扰
-        let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-        cv.dilate(edges, edges, kernel);
-
-        // 2. 轮廓提取
-        let contours = new cv.MatVector();
-        let hierarchy = new cv.Mat();
-        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-        let maxArea = 0, bestQuad = null;
-        for (let i = 0; i < contours.size(); ++i) {
-            let cnt = contours.get(i);
-            let area = cv.contourArea(cnt);
-            // 过滤掉面积小于 20% 的小轮廓，防止锁定到纸张内部的表格
-            if (area < (src.rows * src.cols * 0.2)) continue;
-
-            let peri = cv.arcLength(cnt, true);
-            let approx = new cv.Mat();
-            cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-            
-            if (approx.rows == 4) {
-                if (area > maxArea) {
-                    maxArea = area;
-                    bestQuad = [];
-                    for (let j = 0; j < 4; j++) {
-                        bestQuad.push({ x: approx.data32S[j * 2], y: approx.data32S[j * 2 + 1] });
-                    }
-                }
-            }
-            approx.delete();
-        }
-
-        // 3. 变换与增强
-        if (bestQuad) {
-            let sorted = sortPoints(bestQuad);
-            const w = 1200, h = 1697; // 标准 A4 高清比例
-            let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
-                sorted[0].x, sorted[0].y, sorted[1].x, sorted[1].y,
-                sorted[2].x, sorted[2].y, sorted[3].x, sorted[3].y
-            ]);
-            let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, w, 0, w, h, 0, h]);
-            let M = cv.getPerspectiveTransform(srcCoords, dstCoords);
-            let warped = new cv.Mat();
-            cv.warpPerspective(src, warped, M, new cv.Size(w, h));
-
-            // 增强画质：彩色增强模式，不丢失签名和印章
-            cv.cvtColor(warped, warped, cv.COLOR_RGBA2RGB);
-            warped.convertTo(warped, -1, 1.2, 10); // 略微增加对比度和亮度
-
-            document.getElementById('canvasOutput').style.display = 'block';
-            cv.imshow('canvasOutput', warped);
-            document.getElementById('hint').innerText = "已生成高清扫描件";
-
-            warped.delete(); srcCoords.delete(); dstCoords.delete(); M.delete();
-        } else {
-            alert("未检测到纸张边缘，请确保纸张四周都有深色背景露出。");
-        }
-
-        gray.delete(); edges.delete(); kernel.delete(); contours.delete(); hierarchy.delete();
-    }
-
-    function captureAndScan() {
-        let src = cv.imread(document.getElementById('video'));
-        process(src);
-        src.delete();
-    }
-
-    document.getElementById('fileInput').onchange = (e) => {
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            const img = new Image();
-            img.onload = () => {
-                let src = cv.imread(img);
-                process(src);
-                src.delete();
-            };
-            img.src = ev.target.result;
-        };
-        reader.readAsDataURL(e.target.files[0]);
-    };
-</script>
-<script async src="opencv.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
