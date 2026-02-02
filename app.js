@@ -33,18 +33,6 @@ let latestResultCanvas = null;
 
 const A4_RATIO_W2H = 1 / Math.sqrt(2); // ≈0.707
 
-// 安全兜底：若 enhanceAndWarp 未定义，提供一个最小实现避免流程失败
-if (typeof enhanceAndWarp !== 'function') {
-  function enhanceAndWarp(canvas, quad) {
-    // 简化版本：不做透视，直接增强输入画面
-    const src = cv.imread(canvas);
-    let out = enhanceImage(src, (typeof enhanceModeEl !== 'undefined' ? enhanceModeEl.value : 'auto'));
-    src.delete();
-    return out; // Mat
-  }
-}
-
-
 // 计算站点基路径，例如 https://marcelchn.github.io/ai-scanner
 const BASE = (() => {
   const u = new URL(location.href);
@@ -284,7 +272,7 @@ async function ensureUprightByOSD(enhancedMat) {
     return c;
   } catch (e) {
     console.warn('[scanner] OSD 失败：', e);
-    statusEl.textContent = `OSD 检测失败：${e && e.message ? e.message : String(e)}（采用兜底评分）`;
+    statusEl.text内容 = `OSD 检测失败：${e && e.message ? e.message : String(e)}（采用兜底评分）`;
     let c = autoChooseUprightByScoring(enhancedMat);
     if (c.width > c.height) c = rotateCanvas(c, 270);
     return c;
@@ -292,6 +280,78 @@ async function ensureUprightByOSD(enhancedMat) {
 }
 
 function normalizeDeg(d){ const k=((d%360)+360)%360; if(k>=315||k<45) return 0; if(k<135) return 90; if(k<225) return 180; return 270; }
+
+/** 增强（光照均衡 + 阈值 + 去噪 或 彩色增强） */
+function enhanceImage(mat, mode='auto') {
+  let rgb = new cv.Mat(); cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
+  let gray = new cv.Mat(); cv.cvtColor(rgb, gray, cv.COLOR_RGB2GRAY);
+
+  let bg = new cv.Mat();   cv.GaussianBlur(gray, bg, new cv.Size(0, 0), 35);
+  let norm = new cv.Mat(); cv.subtract(gray, bg, norm); cv.normalize(norm, norm, 0, 255, cv.NORM_MINMAX);
+
+  let bw = new cv.Mat();   cv.adaptiveThreshold(norm, bw, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 31, 10);
+  let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2,2));
+  cv.morphologyEx(bw, bw, cv.MORPH_OPEN, kernel);
+
+  let out = new cv.Mat();
+  if (mode === 'binarize') {
+    out = bw.clone();
+  } else if (mode === 'color') {
+    let lab = new cv.Mat(); cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+    let channels = new cv.MatVector(); cv.split(lab, channels);
+    cv.equalizeHist(channels.get(0), channels.get(0)); cv.merge(channels, lab);
+    cv.cvtColor(lab, out, cv.COLOR_Lab2RGB);
+    channels.delete(); lab.delete();
+  } else {
+    const mean = new cv.Mat(), stddev = new cv.Mat(); cv.meanStdDev(norm, mean, stddev);
+    const contrast = stddev.doubleAt(0,0);
+    if (contrast > 30) {
+      out = bw.clone();
+    } else {
+      out = new cv.Mat(); cv.cvtColor(rgb, out, cv.COLOR_RGB2RGBA);
+    }
+    mean.delete(); stddev.delete();
+  }
+
+  rgb.delete(); gray.delete(); bg.delete(); norm.delete(); kernel.delete();
+  return out;
+}
+
+/** 透视矫正（以检测到的四边形真实宽高为目标） + 调用增强 */
+function enhanceAndWarp(canvas, quad) {
+  const src = cv.imread(canvas);
+  let warped = new cv.Mat();
+
+  if (quad) {
+    const widthA  = dist(quad[2], quad[3]);  // BR-BL
+    const widthB  = dist(quad[1], quad[0]);  // TR-TL
+    const heightA = dist(quad[1], quad[2]);  // TR-BR
+    const heightB = dist(quad[0], quad[3]);  // TL-BL
+    const dstW = Math.max(Math.round(widthA),  Math.round(widthB));
+    const dstH = Math.max(Math.round(heightA), Math.round(heightB));
+
+    const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      quad[0].x, quad[0].y,
+      quad[1].x, quad[1].y,
+      quad[2].x, quad[2].y,
+      quad[3].x, quad[3].y
+    ]);
+    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, 0, dstW - 1, 0, dstW - 1, dstH - 1, 0, dstH - 1
+    ]);
+
+    const M = cv.getPerspectiveTransform(srcTri, dstTri);
+    cv.warpPerspective(src, warped, M, new cv.Size(dstW, dstH), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
+
+    srcTri.delete(); dstTri.delete(); M.delete();
+  } else {
+    warped = src.clone();
+  }
+
+  const out = enhanceImage(warped, (typeof enhanceModeEl !== 'undefined' ? enhanceModeEl.value : 'auto'));
+  src.delete(); warped.delete();
+  return out; // Mat
+}
 
 /** 兜底综合评分（不依赖 OCR） */
 function autoChooseUprightByScoring(enhancedMat) {
@@ -337,6 +397,7 @@ function autoChooseUprightByScoring(enhancedMat) {
   return c;
 }
 
+/** 计算投影方差 / 形态辅助评分 */
 function projectionVars(bw) {
   const rows = bw.rows, cols = bw.cols;
   const rowSums = new Float64Array(rows), colSums = new Float64Array(cols);
@@ -397,7 +458,7 @@ function rotateCanvas(inputCanvas, deg) {
   return out;
 }
 
-/** 四边形检测（A4候选） */
+/** A4候选检测 */
 function detectQuad(canvas) {
   const src = cv.imread(canvas);
   try {
