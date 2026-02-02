@@ -1,11 +1,11 @@
 /**
- * 本地化 Tesseract 配置的最终版 app.js（OCR 优先 + 兜底评分 + 强制纵向 + A4 等比输出）
+ * 本地化 Tesseract 配置最终版 app.js（OCR 优先 + 兜底评分 + 强制纵向 + A4 等比输出）
  * 目录要求：
- * - ./opencv.js（本地）
- * - ./tesseract/tesseract.min.js（本地）
- * - ./tesseract/tesseract.worker.min.js（本地）
- * - ./tesseract/tesseract-core.wasm（本地）
- * - ./tesseract/lang-data/osd.traineddata（本地）
+ * - ./opencv.js
+ * - ./tesseract/tesseract.min.js
+ * - ./tesseract/tesseract.worker.min.js
+ * - ./tesseract/tesseract-core.wasm
+ * - ./tesseract/lang-data/osd.traineddata
  */
 
 const videoEl = document.getElementById('video');
@@ -30,7 +30,7 @@ let a4StableCounter = 0;
 let lastQuad = null;
 let latestResultCanvas = null;
 
-const A4_RATIO_W2H = 1 / Math.sqrt(2);
+const A4_RATIO_W2H = 1 / Math.sqrt(2); // ≈0.707
 
 // 本地化 Tesseract 路径（必须与仓库目录一致）
 const TESSERACT_CONFIG = {
@@ -148,6 +148,7 @@ function processFrame() {
   const frameCanvas = captureFrame();
   const quad = detectQuad(frameCanvas);
   drawOverlay(quad);
+
   if (quad) {
     lastQuad = quad;
     statusEl.textContent = '已检测到疑似 A4（稳定度 ' + a4StableCounter + '/10）';
@@ -157,6 +158,7 @@ function processFrame() {
     statusEl.textContent = '检测中…请将 A4 放置于画面中央';
     a4StableCounter = Math.max(a4StableCounter - 1, 0);
   }
+
   processing = false;
   requestAnimationFrame(processFrame);
 }
@@ -172,13 +174,14 @@ function drawOverlay(quad) {
   ctx.closePath(); ctx.stroke();
 }
 
+/** 主流程：透视（无失真） + 增强 + OCR优先的正向 + 输出A4纵向 + 渲染 */
 async function processAndRender(canvas, quad, sourceLabel='') {
   if (!quad) statusEl.textContent = `未检测到 A4 四边形（${sourceLabel}），已增强原图。`;
   else statusEl.textContent = `已生成扫描件（${sourceLabel}）。`;
 
-  const enhancedMat = enhanceAndWarp(canvas, quad);
-  const uprightCanvas = await autoUprightOCRFirst(enhancedMat);
-  const finalCanvas    = fitToA4Portrait(uprightCanvas);
+  const enhancedMat = enhanceAndWarp(canvas, quad);     // 1) 透视矫正 + 增强
+  const uprightCanvas = await autoUprightOCRFirst(enhancedMat); // 2) OCR优先自动正向（失败则兜底评分）
+  const finalCanvas    = fitToA4Portrait(uprightCanvas);        // 3) 等比缩放，白底居中，纵向A4
 
   latestResultCanvas = finalCanvas;
   const mat = cv.imread(finalCanvas); cv.imshow(resultCanvas, mat); mat.delete();
@@ -186,34 +189,42 @@ async function processAndRender(canvas, quad, sourceLabel='') {
   downloadPngBtn.disabled = false; downloadJpgBtn.disabled = false;
 }
 
+/** 透视矫正（以实际四边形宽高为目标） + 基础增强（不强行套A4比） */
 function enhanceAndWarp(canvas, quad) {
   const src = cv.imread(canvas);
   let warped = new cv.Mat();
+
   if (quad) {
-    const widthA  = dist(quad[2], quad[3]);
-    const widthB  = dist(quad[1], quad[0]);
-    const heightA = dist(quad[1], quad[2]);
-    const heightB = dist(quad[0], quad[3]);
+    const widthA  = dist(quad[2], quad[3]); // BR-BL
+    const widthB  = dist(quad[1], quad[0]); // TR-TL
+    const heightA = dist(quad[1], quad[2]); // TR-BR
+    const heightB = dist(quad[0], quad[3]); // TL-BL
     const dstW = Math.max(Math.round(widthA),  Math.round(widthB));
     const dstH = Math.max(Math.round(heightA), Math.round(heightB));
+
     const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-      quad[0].x, quad[0].y,
-      quad[1].x, quad[1].y,
-      quad[2].x, quad[2].y,
-      quad[3].x, quad[3].y
+      quad[0].x, quad[0].y,  // TL
+      quad[1].x, quad[1].y,  // TR
+      quad[2].x, quad[2].y,  // BR
+      quad[3].x, quad[3].y   // BL
     ]);
-    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [ 0, 0, dstW - 1, 0, dstW - 1, dstH - 1, 0, dstH - 1 ]);
+    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, 0, dstW - 1, 0, dstW - 1, dstH - 1, 0, dstH - 1
+    ]);
+
     const M = cv.getPerspectiveTransform(srcTri, dstTri);
     cv.warpPerspective(src, warped, M, new cv.Size(dstW, dstH), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
     srcTri.delete(); dstTri.delete(); M.delete();
   } else {
     warped = src.clone();
   }
+
   let enhanced = enhanceImage(warped, enhanceModeEl.value);
   src.delete(); warped.delete();
-  return enhanced;
+  return enhanced; // Mat
 }
 
+/** 增强：光照均衡 + 阈值 + 去噪（或彩色增强） */
 function enhanceImage(mat, mode='auto') {
   let rgb = new cv.Mat(); cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
   let gray = new cv.Mat(); cv.cvtColor(rgb, gray, cv.COLOR_RGB2GRAY);
@@ -221,6 +232,7 @@ function enhanceImage(mat, mode='auto') {
   let norm = new cv.Mat(); cv.subtract(gray, bg, norm); cv.normalize(norm, norm, 0, 255, cv.NORM_MINMAX);
   let bw = new cv.Mat();   cv.adaptiveThreshold(norm, bw, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 31, 10);
   let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2,2)); cv.morphologyEx(bw, bw, cv.MORPH_OPEN, kernel);
+
   let out = new cv.Mat();
   if (mode === 'binarize') { out = bw.clone(); }
   else if (mode === 'color') {
@@ -234,30 +246,44 @@ function enhanceImage(mat, mode='auto') {
     if (contrast > 30) out = bw.clone(); else { out = new cv.Mat(); cv.cvtColor(rgb, out, cv.COLOR_RGB2RGBA); }
     mean.delete(); stddev.delete();
   }
+
   rgb.delete(); gray.delete(); bg.delete(); norm.delete(); kernel.delete();
   return out;
 }
 
+/** OCR 优先的自动正向，失败则落回综合评分 */
 async function autoUprightOCRFirst(enhancedMat) {
   let canvas = matToCanvas(enhancedMat);
-  const degFromOSD = await getOrientationByOSD(canvas);
-  if (degFromOSD !== null) {
-    canvas = rotateCanvas(canvas, (360 - (degFromOSD % 360)) % 360);
+
+  const osd = await getOrientationByOSD(canvas);
+  if (osd && typeof osd.deg === 'number') {
+    // 关键修正：OSD 返回的是“需要旋转到正向的角度”，应直接旋转 degNormalized
+    canvas = rotateCanvas(canvas, osd.deg);
   } else {
     canvas = autoChooseUprightByScoring(enhancedMat);
   }
-  if (canvas.width > canvas.height) canvas = rotateCanvas(canvas, 270);
+
+  if (canvas.width > canvas.height) canvas = rotateCanvas(canvas, 270); // 强制纵向
   return canvas;
 }
 
+/** 使用本地化配置的 OSD 检测方向；返回 {deg, conf}；失败返回 null */
 async function getOrientationByOSD(canvas) {
   try {
     if (typeof Tesseract === 'undefined') return null;
     const res = await Tesseract.detect(canvas, TESSERACT_CONFIG);
     const data = res.data || res;
-    const deg = (data.orientation && data.orientation.degrees) || data.degrees;
-    if (typeof deg !== 'number') return null;
-    return normalizeDeg(deg);
+
+    const rawDeg = (data.orientation && data.orientation.degrees) || data.degrees;
+    const conf   = (data.orientation && data.orientation.confidence) || data.confidence || 0;
+
+    if (typeof rawDeg !== 'number') return null;
+
+    const deg = normalizeDeg(rawDeg);
+    // 低置信度直接放弃，走兜底评分（阈值可按需要微调）
+    if (conf < 1.0) return null;
+
+    return { deg, conf };
   } catch (e) {
     console.warn('OSD 检测失败（将回退评分法）：', e);
     return null;
@@ -265,16 +291,21 @@ async function getOrientationByOSD(canvas) {
 }
 function normalizeDeg(d){ let k=((d%360)+360)%360; if(k>=315||k<45) return 0; if(k<135) return 90; if(k<225) return 180; return 270; }
 
+/** 兜底综合评分（不依赖 OCR） */
 function autoChooseUprightByScoring(enhancedMat) {
   const candidates = [0, 90, 180, 270];
   let bestDeg = 0, bestScore = -Infinity;
   const w1 = 1.0, w2 = 0.6, w3 = 0.8;
+
   for (const deg of candidates) {
     const rotated = rotateMat(enhancedMat, deg);
+
     const gray = new cv.Mat(); cv.cvtColor(rotated, gray, cv.COLOR_RGBA2GRAY);
     const bw   = new cv.Mat(); cv.threshold(gray, bw, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+
     const { rowVar, colVar } = projectionVars(bw);
     const projScore = Math.max(rowVar, colVar);
+
     const horizK = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(Math.max(15, Math.floor(bw.cols/80)), 1));
     const vertK  = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(1, Math.max(15, Math.floor(bw.rows/80))));
     const hc = new cv.Mat(); const vc = new cv.Mat();
@@ -282,6 +313,7 @@ function autoChooseUprightByScoring(enhancedMat) {
     cv.morphologyEx(bw, vc, cv.MORPH_CLOSE, vertK);
     const horizResp = blackGain(hc, bw); const vertResp = blackGain(vc, bw);
     horizK.delete(); vertK.delete(); hc.delete(); vc.delete();
+
     const edges = new cv.Mat(); cv.Canny(bw, edges, 60, 180);
     const lines = new cv.Mat(); cv.HoughLinesP(edges, lines, 1, Math.PI/180, 80, Math.max(30, Math.floor(bw.cols/50)), 10);
     let houghHoriz = 0;
@@ -293,13 +325,17 @@ function autoChooseUprightByScoring(enhancedMat) {
       if (angle < 10 || Math.abs(angle-180) < 10) houghHoriz += Math.hypot(dx, dy);
     }
     edges.delete(); lines.delete();
+
     const score = w1*projScore + w2*(horizResp - vertResp) + w3*houghHoriz;
     if (score > bestScore) { bestScore = score; bestDeg = deg; }
+
     rotated.delete(); gray.delete(); bw.delete();
   }
+
   return matToCanvas(rotateMat(enhancedMat, bestDeg));
 }
 
+/** 计算投影方差 / 形态辅助评分 */
 function projectionVars(bw) {
   const rows = bw.rows, cols = bw.cols;
   const rowSums = new Float64Array(rows), colSums = new Float64Array(cols);
@@ -321,14 +357,17 @@ function variance(arr) {
   let v=0; for (let i=0;i<n;i++){const d=arr[i]-mean; v+=d*d;} return v/n;
 }
 
+/** 最终等比缩放为 A4 纵向，白底居中 */
 function fitToA4Portrait(uprightCanvas) {
-  const size = outputSizeEl.value;
+  const size = outputSizeEl.value; // m/h/uh
   const targetShort = size === 'm' ? 1600 : (size === 'h' ? 2400 : 3300);
-  const targetLong  = Math.round(targetShort / A4_RATIO_W2H);
+  const targetLong  = Math.round(targetShort / A4_RATIO_W2H); // ≈ short/0.707
   const outW = targetShort, outH = targetLong;
+
   const scale = Math.min(outW / uprightCanvas.width, outH / uprightCanvas.height);
   const newW = Math.round(uprightCanvas.width  * scale);
   const newH = Math.round(uprightCanvas.height * scale);
+
   const out = document.createElement('canvas'); out.width = outW; out.height = outH;
   const ctx = out.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0,0,outW,outH);
   const dx = Math.floor((outW - newW)/2), dy = Math.floor((outH - newH)/2);
@@ -336,6 +375,7 @@ function fitToA4Portrait(uprightCanvas) {
   return out;
 }
 
+/** Mat 旋转（0/90/180/270） / Mat->Canvas / Canvas旋转 */
 function rotateMat(mat, deg) {
   let out = new cv.Mat();
   if (deg===0) out = mat.clone();
@@ -356,6 +396,7 @@ function rotateCanvas(inputCanvas, deg) {
   return out;
 }
 
+/** 四边形检测（A4候选） */
 function detectQuad(canvas) {
   const src = cv.imread(canvas);
   try {
@@ -365,6 +406,7 @@ function detectQuad(canvas) {
     let edges = new cv.Mat(); cv.Canny(norm, edges, 50, 150);
     let contours = new cv.MatVector(); let hierarchy = new cv.Mat();
     cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
     let best=null, bestScore=0;
     for (let i=0;i<contours.size();i++){
       const cnt=contours.get(i); const peri=cv.arcLength(cnt,true);
@@ -379,6 +421,7 @@ function detectQuad(canvas) {
         approx.delete();
       } else approx.delete();
     }
+
     edges.delete(); contours.delete(); hierarchy.delete(); dst.delete(); bg.delete(); norm.delete();
     if (!best) { src.delete(); return null; } src.delete(); return best;
   } catch (e) { console.error(e); src.delete(); return null; }
