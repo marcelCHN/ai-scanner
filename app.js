@@ -1,6 +1,6 @@
 /**
  * 本地化 Tesseract 配置最终版 app.js（OCR 优先 + 兜底评分 + 强制纵向 + A4 等比输出）
- * 目录要求（与本文件同级的 index.html 一起使用）：
+ * 目录要求：
  * - ./opencv.js
  * - ./tesseract/tesseract.min.js
  * - ./tesseract/tesseract.worker.min.js
@@ -33,15 +33,24 @@ let latestResultCanvas = null;
 
 const A4_RATIO_W2H = 1 / Math.sqrt(2); // ≈0.707
 
-// 本地化 Tesseract 路径（必须与仓库目录一致）
+// 计算站点基路径（确保绝对路径正确）：例如 https://marcelchn.github.io/ai-scanner
+const BASE = (function () {
+  const u = new URL(location.href);
+  // pathname 形如 /ai-scanner/ 或 /ai-scanner/index.html → 取目录
+  const path = u.pathname.endsWith('/') ? u.pathname : u.pathname.replace(/\/[^/]*$/, '/');
+  return `${u.origin}${path.replace(/\/$/, '')}`;
+})();
+
+// 本地化 Tesseract 的绝对路径配置（避免 Worker 相对路径解析失败）
 const TESSERACT_CONFIG = {
-  workerPath: './tesseract/tesseract.worker.min.js',
-  corePath:   './tesseract/tesseract-core.wasm.js', // 关键：必须 .wasm.js
-  langPath:   './tesseract/lang-data'               // OSD 会请求 osd.traineddata.gz
+  workerPath: `${BASE}/tesseract/tesseract.worker.min.js`,
+  corePath:   `${BASE}/tesseract/tesseract-core.wasm.js`, // 关键：必须是 .wasm.js
+  langPath:   `${BASE}/tesseract/lang-data`,              // OSD 会请求 osd.traineddata.gz
+  workerBlobURL: false                                     // 关键：禁用 Blob Worker
 };
 
 // 显示脚本加载日志
-console.log('[scanner] app.js loaded');
+console.log('[scanner] app.js loaded, BASE=', BASE);
 if (statusEl) statusEl.textContent = '脚本已加载，等待 OpenCV 初始化…';
 
 function waitCvReady() {
