@@ -1,12 +1,12 @@
 /**
  * 显式 Worker 版（OCR 优先 + 兜底评分 + 强制纵向 + A4 等比输出）
- * 目录要求：
+ * 目录要求（与本文件同级的 index.html 一起使用）：
  * - ./opencv.js
  * - ./tesseract/tesseract.min.js
  * - ./tesseract/tesseract.worker.min.js
  * - ./tesseract/tesseract-core.wasm.js   ← 注意是 .wasm.js
  * - ./tesseract/tesseract-core.wasm
- * - ./tesseract/lang-data/osd.traineddata.gz ← 必须 .gz
+ * - ./tesseract/lang-data/osd.traineddata.gz ← 注意是 .gz
  */
 
 const videoEl = document.getElementById('video');
@@ -31,7 +31,7 @@ let a4StableCounter = 0;
 let lastQuad = null;
 let latestResultCanvas = null;
 
-const A4_RATIO_W2H = 1 / Math.sqrt(2);
+const A4_RATIO_W2H = 1 / Math.sqrt(2); // ≈0.707
 
 // 计算站点基路径，例如 https://marcelchn.github.io/ai-scanner
 const BASE = (() => {
@@ -158,7 +158,7 @@ downloadJpgBtn.addEventListener('click', () => {
 rotateLeftBtn?.addEventListener('click', () => redrawRotated(270));
 rotateRightBtn?.addEventListener('click', () => redrawRotated(90));
 rotate180Btn?.addEventListener('click', () => redrawRotated(180));
-function redrawRotated(deg){ if(!latestResultCanvas) return; latestResultCanvas=rotateCanvas(latestResultCanvas,deg); const m=cv.imread(latestResultCanvas); cv.imshow(resultCanvas,m); m.delete(); }
+function redrawRotated(deg){ if(!latestResultCanvas) return; latestResultCanvas=rotateCanvas(latestResultCanvas,deg); const m=cv.imread(latestResultCanvas); cv.imshow(resultCanvas, m); m.delete(); }
 
 function downloadDataUrl(url, filename) {
   const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
@@ -215,10 +215,23 @@ async function processAndRender(canvas, quad, sourceLabel='') {
   const uprightCanvas = await ensureUprightByOSD(enhancedMat); // 先试 OSD
   const finalCanvas    = fitToA4Portrait(uprightCanvas);
 
+  // 使用 2D 直接绘制结果，避免某些环境下 cv.imshow 失效
   latestResultCanvas = finalCanvas;
-  const mat = cv.imread(finalCanvas); cv.imshow(resultCanvas, mat); mat.delete();
+  resultCanvas.width  = finalCanvas.width;
+  resultCanvas.height = finalCanvas.height;
+  const dstCtx = resultCanvas.getContext('2d');
+  dstCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+  dstCtx.drawImage(finalCanvas, 0, 0);
+  console.log('[scanner] render result',
+    { resultCanvasSize: [resultCanvas.width, resultCanvas.height],
+      finalCanvasSize:  [finalCanvas.width, finalCanvas.height] });
+
+  // 启用下载
+  downloadPngBtn.disabled = false;
+  downloadJpgBtn.disabled = false;
+
+  // 释放 Mat
   enhancedMat.delete();
-  downloadPngBtn.disabled = false; downloadJpgBtn.disabled = false;
 }
 
 /** 显式 Worker：OSD 文字方向识别 */
@@ -250,15 +263,13 @@ async function ensureUprightByOSD(enhancedMat) {
     const deg = normalizeDeg(rawDeg);
     statusEl.textContent = `OSD: raw=${rawDeg}°, norm=${deg}°, conf=${conf.toFixed(2)} → 采用OSD旋转 ${deg}°`;
 
-    // 置信度太低时，还是兜底评分
     if (conf < 1.0) {
       statusEl.textContent += '（置信度低，改用兜底评分）';
       return autoChooseUprightByScoring(enhancedMat);
     }
 
     let c = rotateCanvas(canvas, deg);
-    // 强制纵向
-    if (c.width > c.height) c = rotateCanvas(c, 270);
+    if (c.width > c.height) c = rotateCanvas(c, 270); // 强制纵向
     return c;
   } catch (e) {
     console.warn('[scanner] OSD 失败：', e);
