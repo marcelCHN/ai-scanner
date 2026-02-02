@@ -5,19 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Pad 文档扫描器（本地化 Tesseract + OpenCV）</title>
   <link rel="stylesheet" href="./style.css" />
-
-  <!-- 提示：GitHub Pages 响应头 CSP 为 script-src 'self'；如浏览器/网络再叠加更严格 CSP，可能仍影响 wasm/eval。 -->
   <script>
     // OpenCV wasm 定位（若你的 opencv.js 需要），无副作用
     window.Module = { locateFile: (path) => './' + path };
   </script>
-
   <!-- 本地 OpenCV.js：必须在 app.js 之前且不要 async -->
   <script src="./opencv.js"></script>
-
   <!-- 本地 Tesseract.js（不依赖 CDN） -->
   <script src="./tesseract/tesseract.min.js"></script>
-
   <!-- 应用逻辑：defer 等待 DOM 就绪 -->
   <script src="./app.js" defer></script>
 </head>
