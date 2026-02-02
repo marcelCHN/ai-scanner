@@ -1,107 +1,42 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pad 文档扫描器（本地算法自动正向）</title>
-  <link rel="stylesheet" href="./style.css" />
-  <script>
-    window.Module = { locateFile: (path) => './' + path };
-  </script>
-  <script src="./opencv.js"></script>
-  <!-- 不依赖 OSD，可去掉 tesseract -->
-  <!-- <script src="./tesseract/tesseract.min.js"></script> -->
-  <script src="./app.js" defer></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Scanner — A4 文档自动识别与矫正</title>
+  <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <header>
-    <h1>Pad 文档扫描器</h1>
-    <p>自动识别倾斜 A4、精准定位并生成高清扫描件</p>
-  </header>
+  <div class="app">
+    <header class="app-header">
+      <h1>AI Scanner</h1>
+      <p class="sub">本地 OpenCV.js — 背景鲁棒识别 · 自动正向 · A4 输出</p>
+    </header>
 
-  <main>
-    <section class="camera-section">
-      <div class="video-wrapper">
-        <video id="video" playsinline autoplay muted></video>
-        <canvas id="overlay" class="overlay"></canvas>
-        <div id="status" class="status">初始化中…</div>
-      </div>
-
-      <div class="controls">
-        <button id="startBtn" class="btn btn-primary">启动相机</button>
-        <button id="snapBtn" class="btn btn-primary" disabled>手动拍摄</button>
-
-        <!-- 保留唯一的上传控件（可多选），删除旧的默认 input -->
-        <label class="upload">
-          <input type="file" id="fileInput" accept="image/*" multiple />
-          <span class="btn btn-primary">选择文件（可多选）</span>
-        </label>
-        <span id="uploadHint" style="margin-left:8px;color:#9ca3af;font-size:12px;">支持一次选择多张图片</span>
-
-        <label class="toggle" style="margin-left:12px;">
-          <input type="checkbox" id="autoCapture" checked />
-          <span>自动抓拍（检测到稳定 A4）</span>
-        </label>
-
-        <div class="options" style="margin-left:12px;">
-          <label>
-            增强模式：
-            <select id="enhanceMode">
-              <option value="auto" selected>自动（推荐）</option>
-              <option value="binarize">纯黑白（阈值）</option>
-              <option value="color">保留彩色</option>
-            </select>
-          </label>
-          <label style="margin-left:12px;">
-            输出分辨率：
-            <select id="outputSize">
-              <option value="m">中（约 1600×2300）</option>
-              <option value="h" selected>高（约 2400×3400）</option>
-              <option value="uh">超高（约 3300×4700）</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="options" style="margin-left:12px;">
-          <button id="rotateLeftBtn"  class="btn btn-primary btn-sm">左转90°</button>
-          <button id="rotateRightBtn" class="btn btn-primary btn-sm">右转90°</button>
-          <button id="rotate180Btn"  class="btn btn-primary btn-sm">旋转180°</button>
-        </div>
-      </div>
+    <section class="controls">
+      <input id="fileInput" type="file" accept="image/*" multiple hidden>
+      <label class="btn" for="fileInput">选择文件</label>
+      <button id="prevBtn" class="btn" type="button">上一张</button>
+      <button id="nextBtn" class="btn" type="button">下一张</button>
+      <span id="statusBar" class="status">就绪</span>
     </section>
 
-    <section class="result-section">
-      <h2>扫描结果</h2>
-
-      <div class="gallery-toolbar">
-        <button id="prevScan" class="btn btn-primary btn-sm">上一张</button>
-        <span id="scanIndicator" class="indicator">0 / 0</span>
-        <button id="nextScan" class="btn btn-primary btn-sm">下一张</button>
+    <section class="viewer">
+      <div class="canvas-wrap">
+        <canvas id="resultCanvas" width="1240" height="1754" aria-label="A4输出"></canvas>
       </div>
-
-      <div class="result-wrapper">
-        <canvas id="resultCanvas"></canvas>
-      </div>
-
-      <div id="thumbList" class="thumb-list"></div>
-
-      <div class="result-actions" style="margin-top:12px;">
-        <button id="downloadPng" class="btn btn-primary" disabled>下载 PNG</button>
-        <button id="downloadJpg" class="btn btn-primary" disabled>下载 JPG</button>
-      </div>
+      <aside class="thumbs">
+        <ul id="thumbList" class="thumb-list"></ul>
+      </aside>
     </section>
 
-    <section class="tips">
-      <h2>使用提示</h2>
-      <ul>
-        <li>A4 置于纯色背景，光照均衡。</li>
-        <li>若仍有个别倒置，可用“旋转180°”按钮兜底。</li>
-      </ul>
-    </section>
-  </main>
+    <footer class="app-footer">
+      <small>提示：不依赖 OCR，采用几何+纹理评分与上下密度校正，适配非深色或杂乱背景。</small>
+    </footer>
+  </div>
 
-  <footer>
-    <small>© 2026 文档扫描演示 · OpenCV.js（本地算法自动正向）</small>
-  </footer>
+  <!-- 本地脚本，仅保留 OpenCV 与应用脚本，避免 CSP 外链问题 -->
+  <script src="./opencv.js" defer></script>
+  <script src="./app.js" defer></script>
 </body>
 </html>
