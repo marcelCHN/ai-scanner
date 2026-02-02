@@ -6,24 +6,30 @@
   <title>Pad 文档扫描器（A4 自动识别与高清扫描）</title>
   <link rel="stylesheet" href="./style.css" />
 
-  <!-- 若服务端没有 CSP 响应头，这个 meta 能放宽；如已有响应头，请在托管层配置 -->
+  <!-- 仅当服务端没有设置更严格的 CSP 响应头时，这个 meta 才生效。
+       若你的托管（如公司网关）已通过响应头设置了 CSP，请用 _headers/vercel.json 改响应头。 -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self';
-                 script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:;
-                 style-src 'self' 'unsafe-inline';
-                 img-src 'self' data: blob:;
-                 connect-src 'self' blob:;
-                 worker-src 'self' blob:;">
+        content="
+          default-src 'self';
+          script-src 'self' https://unpkg.com 'unsafe-eval' 'wasm-unsafe-eval' blob: data:;
+          style-src 'self' 'unsafe-inline';
+          img-src 'self' data: blob:;
+          connect-src 'self' https://unpkg.com blob:;
+          worker-src 'self' blob:;
+        ">
 
   <script>
+    /* 对不使用 wasm 的 OpenCV 构建无副作用；若有 wasm，会从同目录加载 */
     window.Module = { locateFile: (path) => './' + path };
   </script>
-  <!-- OpenCV 必须在 app.js 之前同步加载 -->
+
+  <!-- 本地 OpenCV.js：必须在 app.js 之前且不要 async，避免初始化竞态 -->
   <script src="./opencv.js"></script>
 
-  <!-- Tesseract.js（用于文字方向检测），可选；如果 CSP 或网络不允许，可暂时移除 -->
+  <!-- 方案1：通过 CDN 加载 Tesseract.js（用于文字方向校正 OSD） -->
   <script src="https://unpkg.com/tesseract.js@v4.0.2/dist/tesseract.min.js"></script>
 
+  <!-- 应用逻辑：defer 等待 DOM 就绪 -->
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -39,6 +45,7 @@
         <canvas id="overlay" class="overlay"></canvas>
         <div id="status" class="status">初始化中…</div>
       </div>
+
       <div class="controls">
         <button id="startBtn">启动相机</button>
         <button id="snapBtn" disabled>手动拍摄</button>
@@ -78,7 +85,7 @@
           </label>
         </div>
 
-        <!-- 手动旋转 -->
+        <!-- 手动旋转（兜底控制） -->
         <div class="options">
           <button id="rotateLeftBtn">左转90°</button>
           <button id="rotateRightBtn">右转90°</button>
