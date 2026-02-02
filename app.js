@@ -33,11 +33,7 @@ let latestResultCanvas = null;
 const A4_RATIO_W2H = 1 / Math.sqrt(2); // ≈0.707
 
 // 本地化 Tesseract 路径（必须与仓库目录一致）
-const TESSERACT_CONFIG = {
-  workerPath: './tesseract/tesseract.worker.min.js',
-  corePath:   './tesseract/tesseract-core.wasm',
-  langPath:   './tesseract/lang-data'
-};
+const TESSERACT_CONFIG = { workerPath: './tesseract/tesseract.worker.min.js', corePath: './tesseract/tesseract-core.wasm.js', langPath: './tesseract/lang-data' };
 
 // 显示脚本加载日志
 console.log('[scanner] app.js loaded');
