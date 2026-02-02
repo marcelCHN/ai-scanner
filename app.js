@@ -1,3 +1,4 @@
+```javascript
 /**
  * 本地化 Tesseract 配置最终版 app.js（OCR 优先 + 兜底评分 + 强制纵向 + A4 等比输出）
  * 目录要求：
@@ -257,9 +258,12 @@ async function autoUprightOCRFirst(enhancedMat) {
 
   const osd = await getOrientationByOSD(canvas);
   if (osd && typeof osd.deg === 'number') {
-    // 关键修正：OSD 返回的是“需要旋转到正向的角度”，应直接旋转 degNormalized
+    // 临时日志：采用 OSD 旋转
+    statusEl.textContent += ` → 采用OSD旋转 ${osd.deg}°`;
+    // 关键：OSD 返回的是“需要旋转到正向的角度”，应直接旋转 degNormalized
     canvas = rotateCanvas(canvas, osd.deg);
   } else {
+    statusEl.textContent += ` → OSD不可用，采用兜底评分`;
     canvas = autoChooseUprightByScoring(enhancedMat);
   }
 
@@ -267,25 +271,39 @@ async function autoUprightOCRFirst(enhancedMat) {
   return canvas;
 }
 
-/** 使用本地化配置的 OSD 检测方向；返回 {deg, conf}；失败返回 null */
+/** 使用本地化配置的 OSD 检测方向；返回 {deg, conf}；失败返回 null（含临时日志） */
 async function getOrientationByOSD(canvas) {
   try {
-    if (typeof Tesseract === 'undefined') return null;
+    if (typeof Tesseract === 'undefined') {
+      statusEl.textContent = 'OSD 未加载（Tesseract 未定义）';
+      return null;
+    }
     const res = await Tesseract.detect(canvas, TESSERACT_CONFIG);
     const data = res.data || res;
 
     const rawDeg = (data.orientation && data.orientation.degrees) || data.degrees;
     const conf   = (data.orientation && data.orientation.confidence) || data.confidence || 0;
 
-    if (typeof rawDeg !== 'number') return null;
+    if (typeof rawDeg !== 'number') {
+      statusEl.textContent = 'OSD 返回无角度（rawDeg 非数字）';
+      return null;
+    }
 
     const deg = normalizeDeg(rawDeg);
+
+    // 临时日志：显示原始角度、归一化角度、置信度
+    statusEl.textContent = `OSD: raw=${rawDeg}°, norm=${deg}°, conf=${conf.toFixed(2)}`;
+
     // 低置信度直接放弃，走兜底评分（阈值可按需要微调）
-    if (conf < 1.0) return null;
+    if (conf < 1.0) {
+      statusEl.textContent += '（置信度低，启用兜底评分）';
+      return null;
+    }
 
     return { deg, conf };
   } catch (e) {
     console.warn('OSD 检测失败（将回退评分法）：', e);
+    statusEl.textContent = `OSD 检测失败：${e && e.message ? e.message : String(e)}（启用兜底评分）`;
     return null;
   }
 }
@@ -434,3 +452,4 @@ function orderQuad(points){
   return [tl,tr,br,bl];
 }
 function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx + dy*dy); }
+```
