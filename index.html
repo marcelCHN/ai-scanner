@@ -3,18 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pad 文档扫描器（本地化 Tesseract + OpenCV）</title>
+  <title>Pad 文档扫描器（本地算法自动正向）</title>
   <link rel="stylesheet" href="./style.css" />
-
-  <!-- OpenCV 的 wasm 定位（若你的 opencv.js 需要），无副作用 -->
   <script>
     window.Module = { locateFile: (path) => './' + path };
   </script>
-
-  <!-- 加载顺序：opencv.js → tesseract.min.js → app.js（defer） -->
-  <!-- 重要：不要添加任何外部脚本（例如 at.alicdn.com 的 iconfont JS），以免被 CSP 阻止 -->
   <script src="./opencv.js"></script>
-  <script src="./tesseract/tesseract.min.js"></script>
+  <!-- 不再依赖 Tesseract，可删除该行；如保留也不影响 -->
+  <!-- <script src="./tesseract/tesseract.min.js"></script> -->
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -86,15 +82,14 @@
     <section class="tips">
       <h2>使用提示</h2>
       <ul>
-        <li>将 A4 纸置于纯色背景，避免与背景同色以提升识别稳定性。</li>
-        <li>保持充足光照，避免强反光；系统会自动做光照均衡处理。</li>
-        <li>如出现横向或倒置，系统会自动矫正；也可使用手动旋转按钮一键修正。</li>
+        <li>A4 置于纯色背景，光照均衡。</li>
+        <li>若仍有个别倒置，可用“旋转180°”按钮兜底。</li>
       </ul>
     </section>
   </main>
 
   <footer>
-    <small>© 2026 文档扫描演示 · 本地化 Tesseract.js & OpenCV.js</small>
+    <small>© 2026 文档扫描演示 · OpenCV.js（本地算法自动正向）</small>
   </footer>
 </body>
 </html>
