@@ -6,8 +6,7 @@
   <title>Pad 文档扫描器（A4 自动识别与高清扫描）</title>
   <link rel="stylesheet" href="./style.css" />
 
-  <!-- 仅当服务端没有设置 CSP 响应头时，这个 meta 才生效。
-       若响应头已存在更严格的 CSP，请使用托管侧的响应头配置放宽。 -->
+  <!-- 若服务端没有 CSP 响应头，这个 meta 能放宽；如已有响应头，请在托管层配置 -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self';
                  script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:;
@@ -17,17 +16,14 @@
                  worker-src 'self' blob:;">
 
   <script>
-    // 对不使用 wasm 的构建没有副作用；若有 wasm，会从同目录加载
     window.Module = { locateFile: (path) => './' + path };
   </script>
-
   <!-- OpenCV 必须在 app.js 之前同步加载 -->
   <script src="./opencv.js"></script>
 
-  <!-- Tesseract.js（用于文字方向检测 OSD）。可选：若不想用网络CDN，可改为本地文件。 -->
+  <!-- Tesseract.js（用于文字方向检测），可选；如果 CSP 或网络不允许，可暂时移除 -->
   <script src="https://unpkg.com/tesseract.js@v4.0.2/dist/tesseract.min.js"></script>
 
-  <!-- 应用逻辑 defer -->
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -47,7 +43,7 @@
         <button id="startBtn">启动相机</button>
         <button id="snapBtn" disabled>手动拍摄</button>
 
-        <!-- 图片上传（不需要拍摄也能生成扫描件） -->
+        <!-- 上传图片 -->
         <label class="upload">
           <input type="file" id="fileInput" accept="image/*" />
           <span class="upload-btn">上传图片生成扫描件</span>
@@ -58,7 +54,6 @@
           <span>自动抓拍（检测到稳定 A4）</span>
         </label>
 
-        <!-- 新增：文字方向校正开关 -->
         <label class="toggle">
           <input type="checkbox" id="textOrientationFix" checked />
           <span>文字方向校正</span>
@@ -82,6 +77,13 @@
             </select>
           </label>
         </div>
+
+        <!-- 手动旋转 -->
+        <div class="options">
+          <button id="rotateLeftBtn">左转90°</button>
+          <button id="rotateRightBtn">右转90°</button>
+          <button id="rotate180Btn">旋转180°</button>
+        </div>
       </div>
     </section>
 
@@ -101,8 +103,7 @@
       <ul>
         <li>将 A4 纸置于纯色背景，避免与背景同色以提升识别稳定性。</li>
         <li>保持充足光照，避免强反光；系统会自动做光照均衡处理。</li>
-        <li>相机模式下检测到稳定的四边形且与 A4 比例匹配时，会自动抓拍并生成正向高清扫描件；也可直接上传图片生成扫描件。</li>
-        <li>启用“文字方向校正”后，系统会根据文字方向自动旋转为正向。</li>
+        <li>如出现横向或倒置，系统会自动矫正；也可使用手动旋转按钮一键修正。</li>
       </ul>
     </section>
   </main>
