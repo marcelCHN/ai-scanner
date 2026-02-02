@@ -7,11 +7,20 @@
   const A4_W = 1240; const A4_H = 1754;
   const statusBar = document.getElementById('statusBar');
   const fileInput = document.getElementById('fileInput');
+  const pickBtn = document.getElementById('pickBtn');
   const resultCanvas = document.getElementById('resultCanvas');
   const thumbList = document.getElementById('thumbList');
   const prevBtn = document.getElementById('prevBtn');
   const nextBtn = document.getElementById('nextBtn');
   const rctx = resultCanvas.getContext('2d');
+  
+  if(pickBtn){
+    pickBtn.addEventListener('click', ()=>{
+      console.log('[AI Scanner] pickBtn clicked');
+      try{ fileInput.click(); }catch(e){ console.warn('fileInput.click failed', e); }
+    });
+  }
+  console.log('[AI Scanner] app.v2.js loaded');
 
   const scans = []; let currentIndex = -1;
   function setStatus(msg){ statusBar.textContent = msg; }
