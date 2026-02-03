@@ -5,15 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Pad 文档扫描器（本地算法自动正向）</title>
   <link rel="stylesheet" href="./style.css" />
-
-  <!-- OpenCV 的 wasm 定位（若你的 opencv.js 需要），无副作用 -->
   <script>
     window.Module = { locateFile: (path) => './' + path };
   </script>
-
-  <!-- 加载顺序：opencv.js →（可选）tesseract.min.js → app.js（defer）
-       注：本版本不再依赖 Tesseract/OSD，若无需可删除 tesseract.min.js 引用 -->
   <script src="./opencv.js"></script>
+  <!-- 不依赖 OSD，可去掉 tesseract -->
   <!-- <script src="./tesseract/tesseract.min.js"></script> -->
   <script src="./app.js" defer></script>
 </head>
@@ -35,7 +31,7 @@
         <button id="startBtn" class="btn btn-primary">启动相机</button>
         <button id="snapBtn" class="btn btn-primary" disabled>手动拍摄</button>
 
-        <!-- 统一样式的“选择文件（可多选）” -->
+        <!-- 保留唯一的上传控件（可多选），删除旧的默认 input -->
         <label class="upload">
           <input type="file" id="fileInput" accept="image/*" multiple />
           <span class="btn btn-primary">选择文件（可多选）</span>
@@ -77,7 +73,6 @@
     <section class="result-section">
       <h2>扫描结果</h2>
 
-      <!-- 浏览控件（上一张/下一张 + 指示器） -->
       <div class="gallery-toolbar">
         <button id="prevScan" class="btn btn-primary btn-sm">上一张</button>
         <span id="scanIndicator" class="indicator">0 / 0</span>
@@ -88,7 +83,6 @@
         <canvas id="resultCanvas"></canvas>
       </div>
 
-      <!-- 缩略图列表 -->
       <div id="thumbList" class="thumb-list"></div>
 
       <div class="result-actions" style="margin-top:12px;">
