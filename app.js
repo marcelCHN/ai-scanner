@@ -162,12 +162,12 @@ rotateRightBtn?.addEventListener('click', () => {
   ctx.drawImage(latestResultCanvas, 0, 0);
 });
 rotate180Btn?.addEventListener('click', () => {
-  if (!最新ResultCanvas) return;
-  最新ResultCanvas = rotateCanvas(最新ResultCanvas, 180);
+  if (!latestResultCanvas) return;
+  latestResultCanvas = rotateCanvas(latestResultCanvas, 180);
   const ctx = resultCanvas.getContext('2d');
-  resultCanvas.width = 最新ResultCanvas.width;
-  resultCanvas.height = 最新ResultCanvas.height;
-  ctx.drawImage(最新ResultCanvas, 0, 0);
+  resultCanvas.width = latestResultCanvas.width;
+  resultCanvas.height = latestResultCanvas.height;
+  ctx.drawImage(latestResultCanvas, 0, 0);
 });
 
 function downloadDataUrl(url, filename) {

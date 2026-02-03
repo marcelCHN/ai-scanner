@@ -19,11 +19,12 @@ body {
 header {
   padding: 16px 20px;
   border-bottom: 1px solid rgba(255,255,255,0.1);
+  position: sticky; top: 0; backdrop-filter: saturate(120%) blur(6px);
 }
 header h1 { margin: 0 0 6px; font-size: 20px; }
 header p { margin: 0; color: var(--muted); font-size: 14px; }
 
-main { padding: 16px; }
+main { padding: 16px; max-width: 1200px; margin: 0 auto; }
 .camera-section, .result-section, .tips {
   background: var(--panel);
   border-radius: 12px;
@@ -64,6 +65,7 @@ video {
 .controls {
   display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 12px;
 }
+.controls button, .controls .upload-btn { @apply btn btn-primary; }
 .options { display: inline-flex; gap: 14px; align-items: center; }
 select {
   background: #0b1730;
@@ -72,6 +74,10 @@ select {
   border-radius: 10px;
   padding: 8px;
 }
+.upload .upload-btn{
+  display:inline-block; background: var(--primary); color:#012a36; padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer;
+}
+.upload input[type="file"]{ position:absolute; left:-9999px; }
 
 .result-wrapper {
   width: 100%;
@@ -82,14 +88,19 @@ select {
   overflow: hidden;
   background: #000;
 }
-#resultCanvas { width: 100%; height: auto; display: block; }
+#resultCanvas { width: 100%; height: auto; display: block; background:#000; }
 
 .result-actions { margin-top: 12px; display: flex; gap: 12px; }
 
 .tips ul { margin: 0; padding-left: 20px; }
 .tips li { color: var(--muted); margin: 6px 0; }
 
-footer { text-align: center; color: var(--muted); padding: 12px; }
+footer { text-align: center; color: var(--muted); padding: 20px; }
+
+/* 修复在部分浏览器下按钮与输入控件的垂直对齐问题 */
+button, select { vertical-align: middle; }
+label.upload { display:inline-flex; align-items:center; gap:8px; }
+
 
 /* ========== 统一按钮样式（与页面现有蓝色按钮一致） ========== */
 .btn {
